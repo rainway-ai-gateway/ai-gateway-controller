@@ -2,31 +2,19 @@
 
 English | [中文](./README-CN.md)
 
-`ai-gateway-controller` is a Kubernetes controller designed to enable automatic discovery and configuration of BFE (Beyond Front End) Layer 7 services based on Kubernetes Service resources. The controller continuously monitors changes to Service resources in the cluster and automatically registers eligible services into BFE configurations, enabling seamless traffic integration and management.
+`ai-gateway-controller` is a Kubernetes controller designed to implement the following features:
+- Inference pool discovery and automatic synchronization to BFE
+- Discovery of regular AI Kubernetes Services (not dependent on inference pool) and automatic synchronization to BFE
 
-## Features
-
-- **Multi-architecture support**: Compatible with both x86_64 and ARM64 architectures.
-- **Lightweight base image**: Built on Alpine for minimal size and enhanced security.
-- **Granular service filtering**: Supports namespace-based filtering of Kubernetes Services to process.
-- **Multi-product-line support**: Enables isolated BFE cluster configurations for different business lines.
-- **Multi-port support**: Allows a single Service defined multiple ports map to multiple BFE instance pools.
-- **Comprehensive monitoring**:
-  - **Readiness probe**: Ensures the controller only receives traffic after it is fully ready.
-  - **Liveness probe**: Automatically detects and recovers from abnormal states.
-- **Operation auditing**:
-  - Operation results are recorded as ConfigMaps for easy auditing and traceability.
-  - Operation statuses are logged as Kubernetes Events for seamless integration with existing monitoring systems.
-- **Other**:
-  - Customizable retry intervals to adapt to varying network conditions and workloads.
+This controller continuously monitors changes to the above resources in the Kubernetes cluster, automatically registering eligible services into BFE configurations to achieve seamless integration and management of large model inference service traffic.
 
 ## Quick Start
 
 ### Prerequisites
 
 - Kubernetes cluster (v1.18+)
-- Properly configured `kubectl`
-- [BFE API Server](https://github.com/bfenetworks/api-server) deployed and accessible
+- Properly configured kubectl
+- [Yingfei ai gateway api](https://github.com/yf-networks/ai-gateway-api) deployed and accessible
 
 ### Deploy the Controller
 
@@ -35,164 +23,153 @@ English | [中文](./README-CN.md)
 git clone https://github.com/yf-networks/ai-gateway-controller.git
 cd ai-gateway-controller
 
-# Apply the deployment manifest
-kubectl apply -f ./examples/ai-gateway-controller-endpoints.yaml
+# Apply deployment manifests
+kubectl apply -f ./examples/deploy/yf-ai-gateway-controller-sa.yaml
+kubectl apply -f ./examples/deploy/yf-ai-gateway-controller.yaml
 ```
 
 ### Verify Deployment
 
 ```bash
 kubectl get deployment bfe-ai-gateway-controller
-kubectl get pods
+kubectl get pods 
+
 ```
 
 ## Configuration Guide
 
-### Controller Configuration  
-Refer to [./examples/ai-gateway-controller-endpoints.yaml](./examples/ai-gateway-controller-endpoints.yaml).
+### Controller Configuration
+Please refer to [./examples/deploy/yf-ai-gateway-controller.yaml](./examples/deploy/yf-ai-gateway-controller.yaml).
 
 Notes:
-- Modify the container image source according to your environment.
-- Update `bfe-api-addr` to match your API server address.
-- Set `bfe-api-token` based on your API server token configuration.
-  - Get token by `System View / User Manage / Token` from API servr.
+- You can modify the image source according to your actual scenario
+- Please modify ai-gateway-api-addr based on the address of your ai gateway api
+- Please modify ai-gateway-api-token based on the token configuration of your ai gateway api
+  - On the ai gateway api, you can obtain the Token through `User Manage / Token`
 
-### Service Label  
-The controller automatically registers Services annotated with specific labels into BFE.
-
-Notes:
-- Add the label `bfe-product` to specify the corresponding BFE product line.
-- The `name` field in each port definition must be explicitly set.
-
-See [./examples/whoami_alb.yaml](./examples/whoami_alb.yaml) for reference.
-
-Example:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: whoami
-  namespace: open-bfe-demo
-  labels:
-    bfe-product: demo
-spec:
-  ports:
-    - name: http
-      port: 8080
-      targetPort: 80
-  selector:
-    app.kubernetes.io/name: whoami
+### Inference Pool Discovery
+Deploy
 ```
+$ kubectl apply -f ./examples/inferencepool/inference-pool.yaml
+```
+Please refer to [./examples/inferencepool/inference-pool.yaml](./examples/inferencepool/inference-pool.yaml) for details.
+
+
+### Regular AI Kubernetes Service Discovery
+Deploy
+```
+$ kubectl apply -f ./examples/l7service/whoami_airs.yaml
+```
+Please refer to [./examples/l7service/whoami_airs.yaml](./examples/l7service/whoami_airs.yaml) for details.
+
+Notes:
+- Add `bfe-product` to labels, its value should be `AI_product`
+- The port name in ports must be specified
 
 ## Monitoring & Operations
 
 ### Health Checks
 
-The controller exposes standard Kubernetes health check endpoints:
+The controller provides standard Kubernetes health check endpoints:
 
-- **Readiness Check**: `GET /ready` – verifies if the controller is ready to handle requests.
-- **Liveness Check**: `GET /healthz` – checks whether the controller is running healthily.
+- **Readiness Check**: `GET /ready` - Checks if the controller is ready to handle requests
+- **Liveness Check**: `GET /healthz` - Checks if the controller is running healthily
 
-### Operation Auditing
-
-Key operations are recorded in two locations:
-
-1. **Result ConfigMap**: Contains the most recently applied successful BFE configuration.
-   ```bash
-   kubectl get configmap whoami.result -n open-bfe-demo -o yaml
-   ```
-
-2. **Kubernetes Events**: Logs significant status changes.
 
 ## Building the Project
 
 ### Build Requirements
 
-- Go 1.21+
+- Go 1.24+
 - Docker
 
 ### Build Commands
-
 ```bash
 # Build binary
 make build
 
-# Build Docker image (for current architecture)
+# Build Docker image (current architecture)
 make docker
 
-# Push Docker image (multi-platform: linux/amd64 & linux/arm64)
+# Push docker image (multi-platform: linux/amd64 & linux/arm64)
 make docker-push REGISTRY=ghcr.io/your-org
 ```
-Note:
-- It may need to set GOPROXY to build. eg:
+
+Notes:
+- You may need to configure GOPROXY for smooth building. eg:
+
 ```
 GO111MODULE=on GOPROXY=https://goproxy.cn,direct go mod download
 ```
 
-## Usage Example
+## Usage Examples
 
 ### Prerequisites
 
-#### Setup examples/ai-gateway-controller-endpoints.yaml
-- API Server URL: `http://172.18.1.244:8183`
+#### Configure examples/ai-gateway-controller-endpoints.yaml
+- Service address: `http://172.18.1.244:8183`
 - Token: `Token xCFZgmV02dzD3lWTlRvN'`
-  - Create the token in the Control Plane [dashboard](https://github.com/bfenetworks/dashboard/blob/develop/README.md) beforehand.
-- Monitored namespace: `open-bfe-demo`
-- Kubernetes cluster name: `szyf`
-- image has been set properly. Please refer to [ai-gateway-controller image](https://github.com/yf-networks/ai-gateway-controller/pkgs/container/ai-gateway-controller)
+  - You need to create a `token` in advance on the control plane [dashboard](https://github.com/yf-networks/ai-gateway-web)
+- Monitored k8s namespace: `open-bfe-demo`
+- k8s cluster name: `szyf`
+- Image address. Please refer to [ai-gateway-controller image](https://github.com/yf-networks/ai-gateway-controller/pkgs/container/ai-gateway-controller)
 
-#### Setup for examples/whoami_alb.yaml
-- Product `demo` has been created in the Control Plane [dashboard](https://github.com/bfenetworks/dashboard/blob/develop/README.md) .
+Notes:
+- Please modify the values of the above configurations according to your actual environment.
+- After starting the ai gateway api, the product line `AI_product` has been automatically created
 
-### Deploy the Service Controller
+### Deploy ai-gateway-controller
 
-```bash
-# Deploy service controller
-$ kubectl apply -f examples/ai-gateway-controller-endpoints.yaml
+```
+# Deploy ai-gateway-controller
+$kubectl apply -f ./examples/deploy/yf-ai-gateway-controller-sa.yaml
+$kubectl apply -f ./examples/deploy/yf-ai-gateway-controller.yaml
 
 # Check deployment status
-$ kubectl get pods
-NAME                                     READY   STATUS    RESTARTS   AGE
-bfe-ai-gateway-controller-64c6bf9f8d-bgkch   1/1     Running   0          8m41s
+$kubectl get pods
+NAME                                     READY   STATUS                   RESTARTS       AGE
+bfe-ai-gateway-controller-7bb75b9b54-sl27s     1/1     Running                  0                64m
 
 # View logs
-$ kubectl logs bfe-ai-gateway-controller-64c6bf9f8d-bgkch
+$kubectl logs bfe-ai-gateway-controller-7bb75b9b54-sl27s
 ...
 ```
 
-### Deploy a Layer 7 Service
+### Deploy Inference Pool AI Inference Service
+Please refer to [./examples/inferencepool/inference-pool.yaml](./examples/inferencepool/inference-pool.yaml) for details.
 
-```bash
-# Deploy Layer 7 service
-$ kubectl apply -f examples/whoami_alb.yaml
+Notes:
+- No need to modify existing Inference Pool
 
-# Verify deployment result (the corresponding instance pool should appear in the API Server web UI)
-$ kubectl get configmap whoami.result -n open-bfe-demo -o yaml
-apiVersion: v1
-data:
-  result: Succ
-  timestamp: "2025-12-01 08:38:24.786"
-kind: ConfigMap
-metadata:
-  creationTimestamp: "2025-12-01T08:38:23Z"
-  labels:
-    extra-msg: update
-    bfe-cm-result: "yes"
-    bfe-result-type: service
-  name: whoami.result
-  namespace: open-bfe-demo
-  resourceVersion: "65652526"
-  uid: 8b09c258-c87b-4e17-afc3-ed5f57a4dde9
+```
+# Deploy Inference pool
+$ kubectl apply -f ./examples/inferencepool/epp-rbac.yaml
+$ kubectl apply -f ./examples/inferencepool/service-accounts.yaml
+$ kubectl apply -f ./examples/inferencepool/vllm-sim.yaml
+$ kubectl apply -f ./examples/inferencepool/epp-deployments.yaml
+$ kubectl apply -f ./examples/inferencepool/epp-services.yaml
+$ kubectl apply -f ./examples/inferencepool/inference-pool.yaml
+ 
+# Delete Inference pool
+$ kubectl delete -f ./examples/inferencepool/inference-pool.yaml
+$ kubectl delete -f ./examples/inferencepool/epp-services.yaml
+$ kubectl delete -f ./examples/inferencepool/epp-deployments.yaml
+$ kubectl delete -f ./examples/inferencepool/vllm-sim.yaml
+$ kubectl delete -f ./examples/inferencepool/service-accounts.yaml
+$ kubectl delete -f ./examples/inferencepool/epp-rbac.yaml
 ```
 
-### Delete the Layer 7 Service
+### Deploy Regular AI Inference Service
+Please refer to [./examples/l7service/whoami_airs.yaml](./examples/l7service/whoami_airs.yaml) for details.
 
-```bash
-# Delete Layer 7 service
-$ kubectl delete -f examples/whoami_alb.yaml
+Notes:
+- Add `bfe-product` to labels, its value should be `AI_product`
+- The port name in ports must be specified
 
-# After successful deletion, the corresponding result ConfigMap is also removed
-$ kubectl get configmap whoami.result -n open-bfe-demo -o yaml
-Error from server (NotFound): configmaps "whoami.result" not found
+```
+# Deploy regular AI inference service
+$ kubectl apply -f ./examples/l7service/whoami_airs.yaml
+
+# Delete regular AI inference service
+$ kubectl apply -f ./examples/l7service/whoami_airs.yaml
 ```

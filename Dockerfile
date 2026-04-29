@@ -1,4 +1,4 @@
-# Copyright (c) 2025 The BFE Authors.
+# Copyright (c) 2026 The BFE Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 #
 
 #---step 1
-FROM golang:1.21-alpine AS build
+FROM golang:1.24-alpine AS build
 RUN apk update && apk add git tzdata
 
 ARG COMMIT_ID
@@ -33,17 +33,16 @@ RUN echo "Asia/Shanghai" > /etc/timezone
 # Download go modules
 COPY go.mod .
 COPY go.sum .
-#RUN GO111MODULE=on GOPROXY=https://goproxy.cn,direct go mod download
-RUN GO111MODULE=on go mod download
+RUN GO111MODULE=on GOPROXY=https://goproxy.cn,direct go mod download
+#RUN GO111MODULE=on go mod download
 
 COPY . .
 RUN chmod +x build/build.sh
-RUN sh build/build.sh
+RUN sh build/build.sh docker
 
 
 #---step 2
-#FROM 172.18.1.244:5000/alpine:3.19 AS run
-FROM alpine:3.19 AS run
+FROM alpine:3.23 AS run
 
 ARG COMMIT_ID
 ARG VERSION

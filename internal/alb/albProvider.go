@@ -1,4 +1,4 @@
-// Copyright (c) 2025 The BFE Authors.
+// Copyright (c) 2026 The BFE Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -67,7 +67,7 @@ func getInstances(ep *v1.Endpoints, portName string) []*product_pool.Instance {
 						IP:       addr.IP,
 						Weight:   1,
 						Ports:    map[string]int{"Default": int(p.Port)},
-						Tags:     map[string]string{"key": "value"},
+						//Tags:     map[string]string{"key": "value"},
 					})
 				}
 				break
@@ -166,7 +166,7 @@ func (p *AlbProvider) EnsureInferPoolProductPool(ctx context.Context, product st
 			IP:       rs.IP,
 			Weight:   1,
 			Ports:    map[string]int{"Default": rs.Port},
-			Tags:     map[string]string{"key": "value"},
+			//Tags:     map[string]string{"key": "value"},
 		})
 	}
 	if len(servers) == 0 {

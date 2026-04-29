@@ -2,23 +2,12 @@
 
 中文 | [English](./README.md)
 
-`ai-gateway-controller` 是一个 Kubernetes 控制器，用于实现基于 Kubernetes Service 资源的 BFE (Beyond Front End) 7层服务自动发现与配置。该控制器持续监控集群中的 Service 资源变化，自动将符合条件的服务注册到 BFE 配置中，实现服务流量的无缝接入与管理。
+`ai-gateway-controller` 是一个 Kubernetes 控制器，用于实现如下功能:
+- Inference pool 发现，并自动同步到 BFE
+- 普通AI k8s Service (未依赖inference pool)发现，并自动同步到 BFE
 
-## 特性
+该控制器持续监控k8s集群中的上述资源资源变化，自动将符合条件的服务注册到 BFE 配置中，实现大模型推理服务流量的无缝接入与管理。
 
-- **多架构支持**：同时支持 x86_64 和 ARM64 架构
-- **轻量级基础镜像**：基于 Alpine 构建，体积小，安全性高
-- **精细的服务过滤**：支持 namespace 过滤需要处理的 Kubernetes 服务
-- **多产品线支持**：支持不同业务线的 BFE 集群配置隔离
-- **多端口支持**：支持单个 Service 定义多个端口映射到 多个BFE实例池
-- **完善的监控**：
-  - Readiness 探针：确保控制器准备就绪后才接收流量
-  - Liveness 探针：自动检测并恢复异常状态
-- **操作审计**：
-  - 操作结果记录为 ConfigMap，便于审计和回溯
-  - 操作状态记录为 Kubernetes Event，便于集成现有监控系统
-- **其它**：
-  - 支持自定义重试间隔，适应不同的网络环境和负载情况
 
 ## 快速开始
 
@@ -26,7 +15,7 @@
 
 - Kubernetes 集群 (v1.18+)
 - kubectl 配置正确
-- [BFE API Server](https://github.com/bfenetworks/api-server)已部署并可访问
+- [Yingfei ai gateway api](https://github.com/yf-networks/ai-gateway-api)已部署并可访问
 
 ### 部署控制器
 
@@ -36,7 +25,8 @@ git clone https://github.com/yf-networks/ai-gateway-controller.git
 cd ai-gateway-controller
 
 # 应用部署清单
-kubectl apply -f ./examples/ai-gateway-controller-endpoints.yaml
+kubectl apply -f ./examples/deploy/yf-ai-gateway-controller-sa.yaml
+kubectl apply -f ./examples/deploy/yf-ai-gateway-controller.yaml
 ```
 
 ### 验证部署
@@ -50,40 +40,32 @@ kubectl get pods
 ## 配置说明
 
 ### 控制器配置
-请参考 [./examples/ai-gateway-controller-endpoints.yaml](./examples/ai-gateway-controller-endpoints.yaml).
+请参考 [./examples/deploy/yf-ai-gateway-controller.yaml](./examples/deploy/yf-ai-gateway-controller.yaml).
 
 注意点：
 - 可以根据实际场景，修改image的源
-- 请根据api server的地址，修改bfe-api-addr
-- 请根据api server的token配置，修改bfe-api-token
-  - 在API servr上，可通过如下方式获得Token `System View / User Manage / Token`
-  
-### Service 注解
-通过在 Service 上添加特定标签，控制器会自动将其注册到 BFE
+- 请根据ai gateway api的地址，修改ai-gateway-api-addr
+- 请根据ai gateway api的token配置，修改ai-gateway-api-token
+  - 在ai gateway api上，可通过如下方式获得Token `User Manage / Token`
+
+### Inference Pool发现
+发布
+```
+$ kubectl apply -f ./examples/inferencepool/inference-pool.yaml
+```
+具体内容请参考 [./examples/inferencepool/inference-pool.yaml](./examples/inferencepool/inference-pool.yaml).
+
+
+### 普通AI k8s Service发现
+发布
+```
+$ kubectl apply -f ./examples/l7service/whoami_airs.yaml
+```
+具体内容请参考 [./examples/l7service/whoami_airs.yaml](./examples/l7service/whoami_airs.yaml).
 
 注意点：
-- labels中增加 `bfe-product` 指明对应的BFE 产品线
+- labels中增加 `bfe-product`, 其值应为 `AI_product`
 - ports中的port name必须指定
-
-请参考 [./examples/whoami_alb.yaml](./examples/whoami_alb.yaml)
-
-下面是一个demo
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: whoami
-  namespace: open-bfe-demo
-  labels:
-    bfe-product: demo
-spec:
-  ports:
-    - name: http
-      port: 8080
-      targetPort: 80
-  selector:
-    app.kubernetes.io/name: whoami
-```
 
 ## 监控与运维
 
@@ -94,21 +76,12 @@ spec:
 - **Readiness 检查**：`GET /ready` - 检查控制器是否准备好处理请求
 - **Liveness 检查**：`GET /healthz` - 检查控制器是否健康运行
 
-### 操作审计
-控制器将关键操作记录在两个地方：
-1. **Result ConfigMap**：包含最新一次成功应用的 BFE 配置
-   ```bash
-   kubectl get configmap whoami.result -o yaml
-   ```
-
-2. **Kubernetes Events**：记录重要状态变化
-
 
 ## 构建项目
 
 ### 构建要求
 
-- Go 1.21+
+- Go 1.24+
 - Docker
 
 ### 构建命令
@@ -137,67 +110,68 @@ GO111MODULE=on GOPROXY=https://goproxy.cn,direct go mod download
 #### 配置 examples/ai-gateway-controller-endpoints.yaml
 - 服务地址: `http://172.18.1.244:8183`
 - Token为: `Token xCFZgmV02dzD3lWTlRvN'`
-  - 需要预先在控制面[dashboard](https://github.com/bfenetworks/dashboard/blob/develop/README.md)上创建`token`
+  - 需要预先在控制面[dashboard](https://github.com/yf-networks/ai-gateway-web)上创建`token`
 - 监听的k8s namespace: `open-bfe-demo`
 - k8s的集群名为: `szyf`
 - 镜像地址. 请参考 [ai-gateway-controller image](https://github.com/yf-networks/ai-gateway-controller/pkgs/container/ai-gateway-controller)
 
 注意:
 - 请根据您的实际环境，修改上述配置的值。
+- 启动 ai gateway api 后，已自动创建产品线 `AI_product`
 
-### 配置 examples/whoami_alb.yaml
-- 已经在控制面[dashboard](https://github.com/bfenetworks/dashboard/blob/develop/README.md)上创建好产品线  `demo`
-
-### 部署service controller
+### 部署ai-gateway-controller
 
 ```
-#部署service controller
-$kubectl apply -f examples/ai-gateway-controller-endpoints.yaml
+# 部署ai-gateway-controller
+$kubectl apply -f ./examples/deploy/yf-ai-gateway-controller-sa.yaml
+$kubectl apply -f ./examples/deploy/yf-ai-gateway-controller.yaml
 
-#查看部署状态
+# 查看部署状态
 $kubectl get pods
 NAME                                     READY   STATUS                   RESTARTS       AGE
-bfe-ai-gateway-controller-64c6bf9f8d-bgkch   1/1     Running                  0              8m41s
+bfe-ai-gateway-controller-7bb75b9b54-sl27s     1/1     Running                  0                64m
 
-#查看日志
-$kubectl logs bfe-ai-gateway-controller-64c6bf9f8d-bgkch
+# 查看日志
+$kubectl logs bfe-ai-gateway-controller-7bb75b9b54-sl27s
 ...
 ```
 
-### 部署7层服务
+### 部署Inference Pool AI推理服务
+具体内容请参考 [./examples/inferencepool/inference-pool.yaml](./examples/inferencepool/inference-pool.yaml).
+
+注意点：
+- 不需要修改已有的Inference Pool
 
 ```
-#部署7层服务
-$ kubectl apply -f examples/whoami_alb.yaml
-
-#查看部署结果(在api server的website中能看到对应的实例池)
-$kubectl get configmap whoami.result -n open-bfe-demo -o yaml
-apiVersion: v1
-data:
-  result: Succ
-  timestamp: "2025-12-01 08:38:24.786"
-kind: ConfigMap
-metadata:
-  creationTimestamp: "2025-12-01T08:38:23Z"
-  labels:
-    extra-msg: update
-    bfe-cm-result: "yes"
-    bfe-result-type: service
-  name: whoami.result
-  namespace: open-bfe-demo
-  resourceVersion: "65652526"
-  uid: 8b09c258-c87b-4e17-afc3-ed5f57a4dde9
-
-
+# 发布Inference pool
+$ kubectl apply -f ./examples/inferencepool/epp-rbac.yaml
+$ kubectl apply -f ./examples/inferencepool/service-accounts.yaml
+$ kubectl apply -f ./examples/inferencepool/vllm-sim.yaml
+$ kubectl apply -f ./examples/inferencepool/epp-deployments.yaml
+$ kubectl apply -f ./examples/inferencepool/epp-services.yaml
+$ kubectl apply -f ./examples/inferencepool/inference-pool.yaml
+ 
+# 删除Inference pool
+$ kubectl delete -f ./examples/inferencepool/inference-pool.yaml
+$ kubectl delete -f ./examples/inferencepool/epp-services.yaml
+$ kubectl delete -f ./examples/inferencepool/epp-deployments.yaml
+$ kubectl delete -f ./examples/inferencepool/vllm-sim.yaml
+$ kubectl delete -f ./examples/inferencepool/service-accounts.yaml
+$ kubectl delete -f ./examples/inferencepool/epp-rbac.yaml
 ```
 
-### 删除7层服务
-```
-#删除7层服务
-$ kubectl delete -f examples/whoami_alb.yaml
+### 部署普通AI推理服务
+具体内容请参考 [./examples/l7service/whoami_airs.yaml](./examples/l7service/whoami_airs.yaml).
 
-#成功删除后，对应的result configmap也删除
-$kubectl get configmap whoami.result -n open-bfe-demo -o yaml
-Error from server (NotFound): configmaps "whoami.result" not found
+注意点：
+- labels中增加 `bfe-product`, 其值应为 `AI_product`
+- ports中的port name必须指定
 
 ```
+# 发布普通AI推理服务
+$ kubectl apply -f ./examples/l7service/whoami_airs.yaml
+
+# 删除普通AI推理服务
+$ kubectl apply -f ./examples/l7service/whoami_airs.yaml
+```
+

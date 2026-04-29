@@ -1,4 +1,4 @@
-// Copyright (c) 2025 The BFE Authors.
+// Copyright (c) 2026 The BFE Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -135,8 +135,8 @@ func (r *ServiceReconciler) ensurePool(ctx context.Context, namespace string, na
 
 	if option.Opts.EnableRsPool {
 		product := option.Opts.ProductName
-		if _, ok := labels["ilb-product"]; ok {
-			product = labels["ilb-product"]
+		if _, ok := labels["bfe-product"]; ok {
+			product = labels["bfe-product"]
 		}
 		err = r.ensureProductPool(ctx, service, ep, product)
 	}

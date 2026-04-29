@@ -1,4 +1,4 @@
-# Copyright (c) 2025 The BFE Authors.
+# Copyright (c) 2026 The BFE Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,31 +41,18 @@ spec:
           imagePullPolicy: Always
           image: 172.18.1.244:5000/ai-gateway-controller:latest
           env:
-          - name: ILB_API_TOKEN
+          - name: BFE_API_TOKEN
             valueFrom:
               secretKeyRef:
                 name: secret-bfe-apiserver-demo
-                key: ilb-api-token
+                key: ai-gateway-api-token
           command: [ "/ai-gateway-controller" ]
           args:
-            - '-ilb-api-addr=http://172.18.1.196:8910'
-            - '-ilb-api-token=Token $(ILB_API_TOKEN)'
+            - '-ai-gateway-api-addr=http://172.18.1.196:8183'
+            - '-ai-gateway-api-token=Token $(BFE_API_TOKEN)'
             - '-k8s-cluster-name=szyf'
-            - '-ilb-product-name=AI_product'
-            - '-ilb-api-name=bfe-apiserver-demo'
-            - '-enable-alb-pool=true'
-            - '-enable-rs-pool=false'
-            # - '-nlb-access-type=DirectEndpoint'
-            # - '-nlb-cluster-name=nlbcluster-yxy-test'
-            # - '-flannel-annotation-prefix=flannel.alpha.coreos.com'
-            - '-enable-inference-pool=true'
-            - '-enable-epp-service=false'
-            - '-enable-inference-pool-label-filter=false'
-            - '-enable-aipool-path=true'
-            - '-pushgateway-addr= '
-            - '-heartbeat-interval=30'
-            - '-set-delete-as-clear=false'
-            - '-force-rm-finalizer=false'
+            - '-namespace=open-bfe-demo'
+            - '-zap-log-level=debug'
           ports:
             - containerPort: 9081
           livenessProbe:

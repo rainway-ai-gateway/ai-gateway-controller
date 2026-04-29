@@ -1,4 +1,4 @@
-// Copyright (c) 2025 The BFE Authors.
+// Copyright (c) 2026 The BFE Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -129,7 +129,7 @@ func SetOptions(option *Options) error {
 
 	Opts.ProductName = strings.TrimSpace(Opts.ProductName)
 	if len(Opts.ProductName) <= 0 && Opts.EnableInferencePool {
-		return fmt.Errorf("please set ilb-product-name when enable-inference-pool")
+		return fmt.Errorf("please set bfe-product-name when enable-inference-pool")
 	}
 
 	Opts.ClusterName = strings.TrimSpace(Opts.ClusterName)

@@ -1,4 +1,4 @@
-// Copyright (c) 2025 The BFE Authors.
+// Copyright (c) 2026 The BFE Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,8 +37,8 @@ func initFlags() {
 	flag.BoolVar(&opts.EnableRsPool, "enable-rs-pool", opts.EnableRsPool, "enable l7 pool")
 	flag.BoolVar(&opts.EnableInferencePool, "enable-inference-pool", opts.EnableInferencePool, "enable inference pool")
 
-	flag.StringVar(&opts.ExternalLB.ApiServerAddr, "bfe-api-addr", opts.ExternalLB.ApiServerAddr, "Address of ALB api server")
-	flag.StringVar(&opts.ExternalLB.Token, "bfe-api-token", opts.ExternalLB.Token, "access token of ALB api server")
+	flag.StringVar(&opts.ExternalLB.ApiServerAddr, "ai-gateway-api-addr", opts.ExternalLB.ApiServerAddr, "Address of ALB api server")
+	flag.StringVar(&opts.ExternalLB.Token, "ai-gateway-api-token", opts.ExternalLB.Token, "access token of ALB api server")
 
 	flag.StringVar(&opts.ClusterName, "k8s-cluster-name", opts.ClusterName, "k8s cluster name")
 	flag.StringVar(&opts.ProductName, "bfe-product-name", opts.ProductName, "default product name")

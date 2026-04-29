@@ -1,4 +1,4 @@
-# Copyright (c) 2025 The BFE Authors.
+# Copyright (c) 2026 The BFE Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,13 +39,16 @@ spec:
       containers:
         - name: bfe-ai-gateway-controller
           imagePullPolicy: Always
-          image: ghcr.io/bfenetworks/ai-gateway-controller:x86_64-v1.0.0
+          #imagePullPolicy: IfNotPresent 
+          #image: ghcr.io/bfenetworks/ai-gateway-controller:x86_64-latest
+          image: 172.18.1.244:5000/bfenetworks/ai-gateway-controller:latest
           command: [ "/ai-gateway-controller" ]
           args:
-            - '-bfe-api-addr=http://172.18.1.244:8183'
-            - '-bfe-api-token=Token xCFZgmV02dzD3lWTlRvN'
+            - '-ai-gateway-api-addr=http://172.18.1.196:8183'
+            - '-ai-gateway-api-token=Token 4M_qRi1xYfjGtFiuHWrr'
             - '-k8s-cluster-name=szyf'
             - '-namespace=open-bfe-demo'
+            - '-zap-log-level=debug'
           ports:
             - containerPort: 9081
           livenessProbe:
