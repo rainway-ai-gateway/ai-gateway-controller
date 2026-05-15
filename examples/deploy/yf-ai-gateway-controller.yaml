@@ -1,0 +1,111 @@
+# Copyright(c) 2026 Beijing Yingfei Networks Technology Co.Ltd. 
+#
+#Licensed under the Apache License, Version 2.0 (the "License");
+#you may not use this file except in compliance with the License.
+#You may obtain a copy of the License at
+#
+#http: //www.apache.org/licenses/LICENSE-2.0
+#
+#Unless required by applicable law or agreed to in writing, software
+#distributed under the License is distributed on an "AS IS" BASIS,
+#WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#See the License for the specific language governing permissions and
+#limitations under the License.
+
+# Copyright (c) 2026 The BFE Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bfe-ai-gateway-controller
+  namespace: default
+  labels:
+    app.kubernetes.io/name: bfe-ai-gateway-controller
+    app.kubernetes.io/instance: bfe-ai-gateway-controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate 
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bfe-ai-gateway-controller
+      app.kubernetes.io/instance: bfe-ai-gateway-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bfe-ai-gateway-controller
+        app.kubernetes.io/instance: bfe-ai-gateway-controller
+    spec:
+      serviceAccountName: bfe-ai-gateway-controller
+      containers:
+        - name: bfe-ai-gateway-controller
+          imagePullPolicy: Always
+          #imagePullPolicy: IfNotPresent 
+          #image: ghcr.io/bfenetworks/ai-gateway-controller:x86_64-latest
+          image: 172.18.1.244:5000/bfenetworks/ai-gateway-controller:latest
+          command: [ "/ai-gateway-controller" ]
+          args:
+            - '-ai-gateway-api-addr=http://172.18.1.196:8183'
+            - '-ai-gateway-api-token=Token 4M_qRi1xYfjGtFiuHWrr'
+            - '-k8s-cluster-name=szyf'
+            - '-namespace=open-bfe-demo'
+            - '-zap-log-level=debug'
+          ports:
+            - containerPort: 9081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 3
+          securityContext:
+            runAsUser: 1000       # bfeuser defined in Dockerfile
+            runAsGroup: 1000      # bfegroup defined in Dockerfile
+            runAsNonRoot: true            
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "500m"     
+              memory: "500Mi"   
+            limits:
+              cpu: "1"       
+              memory: "2Gi"   
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: var-run
+              mountPath: /var/run
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: var-run
+          emptyDir: {}
