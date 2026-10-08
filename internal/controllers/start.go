@@ -43,7 +43,6 @@ import (
 
 	"github.com/yf-networks/ai-gateway-controller/internal/controllers/loadbalancer"
 	"github.com/yf-networks/ai-gateway-controller/internal/controllers/readiness"
-	"github.com/yf-networks/ai-gateway-controller/internal/datastore"
 	"github.com/yf-networks/ai-gateway-controller/internal/option"
 )
 
@@ -97,25 +96,9 @@ func Start(scheme *runtime.Scheme) error {
 }
 
 func startExternalLB(mgr manager.Manager) error {
-	//ctx, cancel := context.WithCancel(context.Background())
-	if option.Opts.EnableRsPool {
-		log.Info("add L7 ServiceController")
-		if err := loadbalancer.AddServiceController(mgr); err != nil {
-			return err
-		}
-	}
-
-	if option.Opts.EnableInferencePool {
-		log.Info("add InferencePool Controller")
-		dsDict := datastore.NewInferPoolDict()
-		rootReconciler, err := loadbalancer.AddInferencePoolReconciler(mgr, dsDict)
-		if err != nil {
-			return err
-		}
-
-		if err := loadbalancer.AddPodReconciler(mgr, rootReconciler, dsDict); err != nil {
-			return err
-		}
+	log.Info("add L7 ServiceController")
+	if err := loadbalancer.AddServiceController(mgr); err != nil {
+		return err
 	}
 
 	return nil

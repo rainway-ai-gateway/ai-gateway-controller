@@ -8,7 +8,6 @@ import (
 
 	openapi "github.com/yf-networks/ai-gateway-controller/internal/alb"
 	"github.com/yf-networks/ai-gateway-controller/internal/controllers/loadbalancer"
-	"github.com/yf-networks/ai-gateway-controller/internal/datastore"
 	"github.com/yf-networks/ai-gateway-controller/internal/option"
 	"github.com/yf-networks/ai-gateway-controller/internal/option/externalLB"
 
@@ -19,7 +18,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	inferenceApi "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 )
 
 // Env holds the in-process test environment for the Service reconciler.
@@ -30,22 +28,6 @@ type Env struct {
 	MockALB   *ALBMock
 	Namespace string
 	SvcName   string
-	Product   string
-	Cluster   string
-	Opts      *option.Options
-	origOpts  *option.Options
-}
-
-// InferencePoolEnv holds the in-process test environment for the InferencePool
-// reconciler.
-type InferencePoolEnv struct {
-	Rec       *loadbalancer.InferencePoolReconciler
-	Dict      *datastore.InferPoolDict
-	Client    client.Client
-	Scheme    *apiruntime.Scheme
-	MockALB   *ALBMock
-	Namespace string
-	Product   string
 	Cluster   string
 	Opts      *option.Options
 	origOpts  *option.Options
@@ -54,7 +36,6 @@ type InferencePoolEnv struct {
 func buildScheme() *apiruntime.Scheme {
 	scheme := apiruntime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = inferenceApi.Install(scheme)
 	return scheme
 }
 
@@ -71,7 +52,7 @@ func newAlbProvider(t *testing.T, opts *option.Options, addr string) *openapi.Al
 	if opts.ExternalLB == nil {
 		opts.ExternalLB = externalLB.NewOptions()
 	}
-	// OpenApiClient.doReq reads the server address from option.Opts.ExternalLB.
+	// The AlbProvider InnerAPI client is built from opts.ExternalLB.ApiServerAddr.
 	opts.ExternalLB.ApiServerAddr = addr
 	if opts.ExternalLB.Token == "" {
 		opts.ExternalLB.Token = "Token testtoken"
@@ -94,7 +75,6 @@ func NewEnv(t *testing.T, opts *option.Options, initObjs ...client.Object) *Env 
 		MockALB:   NewALBMock(),
 		Namespace: "yxy-it-test",
 		SvcName:   "it-svc",
-		Product:   "AI_product",
 		Cluster:   "testk8s",
 		Opts:      opts,
 		origOpts:  origOpts,
@@ -133,7 +113,6 @@ func NewDownALBEnv(t *testing.T, opts *option.Options, initObjs ...client.Object
 	env := &Env{
 		Namespace: "yxy-it-test",
 		SvcName:   "it-svc",
-		Product:   "AI_product",
 		Cluster:   "testk8s",
 		Opts:      opts,
 		origOpts:  origOpts,
@@ -148,35 +127,6 @@ func NewDownALBEnv(t *testing.T, opts *option.Options, initObjs ...client.Object
 
 	t.Cleanup(func() {
 		option.Opts = origOpts
-	})
-	return env
-}
-
-// NewInferencePoolEnv builds an in-process InferencePool reconciler test
-// environment with a fake k8s client (InferencePool/Pod) and a mock ALB.
-func NewInferencePoolEnv(t *testing.T, opts *option.Options, initObjs ...client.Object) *InferencePoolEnv {
-	t.Helper()
-	origOpts := option.Opts
-
-	env := &InferencePoolEnv{
-		MockALB:   NewALBMock(),
-		Namespace: "yxy-it-test",
-		Product:   "AI_product",
-		Cluster:   "testk8s",
-		Opts:      opts,
-		origOpts:  origOpts,
-	}
-	env.Scheme = buildScheme()
-	env.Client = buildFakeClient(env.Scheme, initObjs...)
-
-	lb := newAlbProvider(t, opts, env.MockALB.URL())
-	option.Opts = opts
-	env.Dict = datastore.NewInferPoolDict()
-	env.Rec = loadbalancer.NewTestInferencePoolReconciler(env.Client, env.Dict, lb)
-
-	t.Cleanup(func() {
-		option.Opts = origOpts
-		env.MockALB.Close()
 	})
 	return env
 }
@@ -242,39 +192,12 @@ func (e *Env) ServiceExists() bool {
 }
 
 // DeleteService deletes the Service. Because the controller adds a finalizer,
-// the fake client only sets a deletion timestamp (mirroring real k8s).
+// the fake client only sets a deletion timestamp (mirroring real k8s); the
+// object is removed once the reconciler drops the finalizer.
 func (e *Env) DeleteService(t *testing.T) {
 	t.Helper()
 	svc := e.GetService(t)
 	if err := e.Client.Delete(context.Background(), svc); err != nil {
 		t.Fatalf("delete service: %v", err)
-	}
-}
-
-// ReconcileOnce reconciles the InferencePool named name.
-func (e *InferencePoolEnv) ReconcileOnce(t *testing.T, name string) error {
-	t.Helper()
-	_, err := e.Rec.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: client.ObjectKey{Namespace: e.Namespace, Name: name},
-	})
-	return err
-}
-
-// GetInferencePool fetches the InferencePool from the fake client.
-func (e *InferencePoolEnv) GetInferencePool(t *testing.T, name string) *inferenceApi.InferencePool {
-	t.Helper()
-	pool := &inferenceApi.InferencePool{}
-	if err := e.Client.Get(context.Background(), client.ObjectKey{Namespace: e.Namespace, Name: name}, pool); err != nil {
-		t.Fatalf("get inferencepool %s: %v", name, err)
-	}
-	return pool
-}
-
-// DeleteInferencePool deletes the InferencePool object.
-func (e *InferencePoolEnv) DeleteInferencePool(t *testing.T, name string) {
-	t.Helper()
-	pool := e.GetInferencePool(t, name)
-	if err := e.Client.Delete(context.Background(), pool); err != nil {
-		t.Fatalf("delete inferencepool %s: %v", name, err)
 	}
 }

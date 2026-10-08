@@ -38,12 +38,8 @@ import (
 )
 
 const (
-	DefaultProductName         = "AI_product" //""
-	DefaultClusterName         = "testk8s"    //"testk8s"
-	DefaultIlBApiName          = ""           //"default"
-	DefaultEnableRsPool        = true
-	DefaultEnableInferencePool = true
-	DefaultEnableAiPoolPath    = false
+	DefaultClusterName = "testk8s" //"testk8s"
+	DefaultIlBApiName  = ""        //""
 
 	MetricsBindAddress     = ":9080"
 	HealthProbeBindAddress = ":9081"
@@ -57,13 +53,9 @@ const (
 )
 
 type Options struct {
-	ClusterName      string
-	ProductName      string
-	EnableAiPoolPath bool
+	ClusterName string
 
-	EnableRsPool        bool //L4 or L7
-	EnableInferencePool bool
-
+	ApiName    string
 	ExternalLB *externalLB.Options
 
 	RetryIntervalUnitForErrS int
@@ -90,11 +82,8 @@ var (
 
 func NewOptions() *Options {
 	return &Options{
-		ClusterName:         DefaultClusterName,
-		ProductName:         DefaultProductName,
-		EnableRsPool:        DefaultEnableRsPool,
-		EnableInferencePool: DefaultEnableInferencePool,
-		EnableAiPoolPath:    DefaultEnableAiPoolPath,
+		ClusterName: DefaultClusterName,
+		ApiName:     DefaultIlBApiName,
 
 		Namespaces:            corev1.NamespaceAll,
 		MetricsAddr:           MetricsBindAddress,
@@ -141,9 +130,9 @@ func SetOptions(option *Options) error {
 	Opts = option
 	Opts.NamespaceList = strings.Split(Opts.Namespaces, ",")
 
-	Opts.ProductName = strings.TrimSpace(Opts.ProductName)
-	if len(Opts.ProductName) <= 0 && Opts.EnableInferencePool {
-		return fmt.Errorf("please set bfe-product-name when enable-inference-pool")
+	Opts.ApiName = strings.TrimSpace(Opts.ApiName)
+	if len(Opts.ApiName) <= 0 {
+		return fmt.Errorf("please set ai-gateway-api-name")
 	}
 
 	Opts.ClusterName = strings.TrimSpace(Opts.ClusterName)

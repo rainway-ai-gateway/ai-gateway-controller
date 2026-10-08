@@ -30,58 +30,54 @@ package openapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 
-	"github.com/yf-networks/ai-gateway-controller/internal/alb/apis/product_pool"
-	"github.com/yf-networks/ai-gateway-controller/internal/datastore"
+	"github.com/yf-networks/ai-gateway-controller/internal/alb/apis/k8s_pool"
 	"github.com/yf-networks/ai-gateway-controller/internal/option/externalLB"
 	util "github.com/yf-networks/ai-gateway-controller/internal/util"
 	v1 "k8s.io/api/core/v1"
 )
 
-const portNameForInferencePool = "inferp"
-
-var l7PoolTypeIp string = "IP"
-var l7PoolTypeDomain string = "DOMAIN"
-
-var l7PoolRoleEpp string = "EPP"
-var l7PoolRoleCommon string = "COMMON"
-
-type ProductPoolname struct {
-	Product  string
-	Poolname string
-}
-
-type ProductPoolnameList []ProductPoolname
+// K8sPoolNameMaxLength mirrors the k8s_pools name validation (k8s-pools.md §2).
+const K8sPoolNameMaxLength = 64
 
 type AlbProvider struct {
 	options *externalLB.Options
-	client  *OpenApiClient
+
+	// innerClient is the k8s_pools (InnerAPI) client used by Service discovery.
+	innerClient K8sPoolClient
 }
 
 func NewAlbProvider(opts *externalLB.Options) *AlbProvider {
 	return &AlbProvider{
 		options: opts,
-		client: NewOpenApiClient(
+		innerClient: NewInnerApiClient(
 			opts.ApiServerAddr,
 			opts.Token,
 			opts.Timeout),
 	}
 }
 
-func getInstances(ep *v1.Endpoints, portName string) []*product_pool.Instance {
-	instances := make([]*product_pool.Instance, 0)
+// getK8sPoolInstances extracts the discovered instances for the named port from
+// the Endpoints (Ready addresses only) as k8s_pool instances. Instances are
+// deduplicated by (addr, port) to satisfy the k8s_pools uniqueness rule.
+func getK8sPoolInstances(ep *v1.Endpoints, portName string) []*k8s_pool.Instance {
+	instances := make([]*k8s_pool.Instance, 0)
+	seen := make(map[string]struct{})
 
 	for _, subset := range ep.Subsets {
 		for _, p := range subset.Ports {
 			if p.Name == portName {
 				for _, addr := range subset.Addresses {
-					instances = append(instances, &product_pool.Instance{
-						Hostname: addr.IP, //addr.Hostname,
-						IP:       addr.IP,
-						Weight:   1,
-						Ports:    map[string]int{"Default": int(p.Port)},
-						//Tags:     map[string]string{"key": "value"},
+					key := fmt.Sprintf("%s|%d", addr.IP, int(p.Port))
+					if _, ok := seen[key]; ok {
+						continue
+					}
+					seen[key] = struct{}{}
+					instances = append(instances, &k8s_pool.Instance{
+						Addr: addr.IP,
+						Port: int(p.Port),
 					})
 				}
 				break
@@ -92,7 +88,11 @@ func getInstances(ep *v1.Endpoints, portName string) []*product_pool.Instance {
 	return instances
 }
 
-func (p *AlbProvider) EnsureProductPool(ctx context.Context, product string, service *v1.Service,
+// EnsureK8sPool reports each named port's instance snapshot to its k8s_pool via
+// the InnerAPI (full replacement, idempotent upsert), and returns the pool names
+// successfully reported. An empty snapshot is still reported so a drained pool
+// becomes "zero instances" instead of keeping stale members.
+func (p *AlbProvider) EnsureK8sPool(ctx context.Context, service *v1.Service,
 	ep *v1.Endpoints, clusterName string) ([]string, error) {
 
 	namespace := service.GetNamespace()
@@ -105,172 +105,98 @@ func (p *AlbProvider) EnsureProductPool(ctx context.Context, product string, ser
 			continue
 		}
 
-		pool := poolName(product, namespace, name, portName, clusterName)
-		servers := getInstances(ep, portName)
+		pool, err := k8sPoolName(namespace, name, portName, clusterName)
+		if err != nil {
+			return poolNames, err
+		}
+
+		servers := getK8sPoolInstances(ep, portName)
 		if len(servers) == 0 {
-			util.HdlLogger.Info("product instance is empty, skip bfe api operation but record", "poolname", pool)
-			poolNames = append(poolNames, pool)
-			continue
+			util.HdlLogger.Info("k8s pool instance is empty, report zero instances", "poolname", pool)
 		}
 
-		param := &product_pool.UpsertParam{
-			Name:      &pool,
-			Instances: servers,
-		}
-
-		_, _, err := p.client.GetProductPool(product, pool)
-		if err != nil {
-			// pool doesn't exist yet. create it
-			_, _, err := p.client.CreateProductPool(product, param)
-			if err != nil {
-				util.HdlLogger.Error(err, "failed to create product pool", "poolname", pool, "req", param)
-				return poolNames, err
-			} else {
-				util.HdlLogger.Info("create product pool succ", "poolname", pool, "req", param)
-				poolNames = append(poolNames, pool)
-			}
-		} else {
-			// update it
-			_, _, err := p.client.UpdateProductPool(product, param)
-			if err != nil {
-				util.HdlLogger.Error(err, "failed to update product pool", "poolname", pool, "req", param)
-				return poolNames, err
-			} else {
-				util.HdlLogger.Info("update product pool succ", "poolname", pool, "req", param)
-				poolNames = append(poolNames, pool)
-			}
-		}
-	}
-	return poolNames, nil
-}
-
-func (p *AlbProvider) DeleteProductPoolByList(ctx context.Context, poollist ProductPoolnameList) (ProductPoolnameList, error) {
-	poolNames := make(ProductPoolnameList, 0, len(poollist))
-
-	for _, pool := range poollist {
-		e := p.client.DeleteProductPool(pool.Product, pool.Poolname)
-		if e == nil {
-			util.HdlLogger.Info("delete product pool succ", "poolname", pool.Poolname)
-			poolNames = append(poolNames, pool)
-		} else {
-			util.HdlLogger.Error(e, "delete product pool", "poolname", pool.Poolname)
-			return poolNames, e
-		}
-	}
-
-	return poolNames, nil
-}
-
-func poolName(product string, namespace string, name string, portName string, clusterName string) string {
-	if clusterName == "" {
-		return fmt.Sprintf("%s.k8s_%s_%s_%s", product, namespace, name, portName)
-	}
-	return fmt.Sprintf("%s.k8s_%s_%s_%s_%s", product, namespace, name, portName, clusterName)
-}
-
-func (p *AlbProvider) EnsureInferPoolProductPool(ctx context.Context, product string, inferPoolData *datastore.InferPoolData, clusterName string) ([]string, error) {
-	poolNames := make([]string, 0)
-
-	pool := poolName(product, inferPoolData.InferPoolNs, inferPoolData.InferPoolName, portNameForInferencePool, clusterName)
-	var servers []*product_pool.Instance
-
-	for _, rs := range inferPoolData.RsPool {
-		servers = append(servers, &product_pool.Instance{
-			Hostname: rs.Hostname,
-			IP:       rs.IP,
-			Weight:   1,
-			Ports:    map[string]int{"Default": rs.Port},
-			//Tags:     map[string]string{"key": "value"},
-		})
-	}
-	if len(servers) == 0 {
-		util.HdlLogger.Info("product instance is empty", "poolname", pool)
-	}
-
-	eppServer := product_pool.EPPServer{}
-	domain := inferPoolData.EppEntry.GetDomain()
-	port := inferPoolData.EppEntry.GetPort()
-	eppServer.Domain = &domain
-	eppServer.Port = &port
-
-	var eppServerEndPoints []*product_pool.EPPEndpoint
-	for _, epp := range inferPoolData.EppPool {
-		ip := epp.IP
-		ePort := epp.Port
-		eppServerEndPoints = append(eppServerEndPoints, &product_pool.EPPEndpoint{
-			IP:   &ip,
-			Port: &ePort,
-		})
-	}
-	eppServer.Endpoints = eppServerEndPoints
-	if len(eppServerEndPoints) == 0 {
-		util.HdlLogger.Info("product eppServerEndPoints is empty", "poolname", pool)
-	}
-
-	param := &product_pool.UpsertParam{
-		Type:      &l7PoolTypeIp,
-		Role:      &l7PoolRoleEpp,
-		Name:      &pool,
-		Instances: servers,
-		EPPServer: &eppServer,
-	}
-
-	_, _, err := p.client.GetProductPool(product, pool)
-	if err != nil {
-		_, _, err := p.client.CreateProductPool(product, param)
-		if err != nil {
-			util.HdlLogger.Error(err, "failed to create rs product pool", "poolname", pool, "req", param)
+		if _, _, err := p.innerClient.ReplaceK8sPoolInstances(ctx, pool, servers); err != nil {
+			util.HdlLogger.Error(err, "failed to replace k8s pool instances",
+				"poolname", pool, "instances", len(servers))
 			return poolNames, err
-		} else {
-			util.HdlLogger.Info("create rs product pool succ", "poolname", pool, "req", param)
-			poolNames = append(poolNames, pool)
 		}
-	} else {
-		_, _, err := p.client.UpdateProductPool(product, param)
-		if err != nil {
-			util.HdlLogger.Error(err, "failed to update rs product pool", "poolname", pool, "req", param)
-			return poolNames, err
-		} else {
-			util.HdlLogger.Info("update rs product pool succ", "poolname", pool, "req", param)
-			poolNames = append(poolNames, pool)
-		}
+		util.HdlLogger.Info("replace k8s pool instances succ", "poolname", pool, "instances", len(servers))
+		poolNames = append(poolNames, pool)
 	}
-
 	return poolNames, nil
 }
 
-func (p *AlbProvider) DeleteInferPoolProductPool(ctx context.Context, product string, inferPoolName string, inferPoolNs string, clusterName string) ([]string, error) {
-	//
-	//Note: Here use part of L7 pool to delete pool
-	//In this scenario, its safe
-	//
-	//prefix := poolNamePrefix(product, inferPoolNs, inferPoolName)
-	// suffix := ""
-	// if clusterName != "" {
-	// 	suffix = "_" + clusterName
-	// }
-	pool := poolName(product, inferPoolNs, inferPoolName, portNameForInferencePool, clusterName)
+// DeleteK8sPoolByList deletes the given k8s pools (404 treated as success) and
+// returns the pools actually deleted.
+func (p *AlbProvider) DeleteK8sPoolByList(ctx context.Context, poolNames []string) ([]string, error) {
+	deleted := make([]string, 0, len(poolNames))
 
-	pl, _, err := p.client.ListProductPool(product)
-	if err != nil {
-		util.HdlLogger.Error(err, "list product pool", "product", product)
-		return nil, err
+	for _, pool := range poolNames {
+		if err := p.innerClient.DeleteK8sPool(ctx, pool); err != nil {
+			util.HdlLogger.Error(err, "delete k8s pool", "poolname", pool)
+			return deleted, err
+		}
+		util.HdlLogger.Info("delete k8s pool succ", "poolname", pool)
+		deleted = append(deleted, pool)
 	}
-	poolNames := make([]string, 0, len(*pl))
 
-	for _, poolname := range *pl {
-		// check if p is of this service
-		//if strings.HasPrefix(poolname, prefix) && strings.HasSuffix(poolname, suffix) {
-		if pool == poolname {
-			e := p.client.DeleteProductPool(product, poolname)
-			if e == nil {
-				util.HdlLogger.Info("delete product pool succ", "poolname", poolname)
-				poolNames = append(poolNames, poolname)
-			} else {
-				util.HdlLogger.Error(e, "delete product pool", "poolname", poolname)
-				return poolNames, e
-			}
+	return deleted, nil
+}
+
+// k8sPoolName derives the deterministic k8s_pool name for a Service port:
+//
+//	k8s_<namespace>_<service-name>_<port-name>[_<cluster-name>]
+//
+// If the result exceeds the k8s_pools name limit it is folded to a readable
+// prefix plus an 8-char hash suffix so it stays unique and valid.
+func k8sPoolName(namespace, name, portName, clusterName string) (string, error) {
+	identity := namespace + "|" + name + "|" + portName + "|" + clusterName
+
+	pool := fmt.Sprintf("k8s_%s_%s_%s", namespace, name, portName)
+	if clusterName != "" {
+		pool = fmt.Sprintf("%s_%s", pool, clusterName)
+	}
+
+	if len(pool) > K8sPoolNameMaxLength {
+		pool = fmt.Sprintf("%s_%s", pool[:K8sPoolNameMaxLength-9], shortHash8(identity))
+	}
+
+	if err := validK8sPoolName(pool); err != nil {
+		return "", fmt.Errorf("invalid k8s pool name %q: %s", pool, err)
+	}
+	return pool, nil
+}
+
+func shortHash8(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return fmt.Sprintf("%x", sum)[:8]
+}
+
+// validK8sPoolName mirrors iprovider.K8sPoolName: 1-64 chars, only letters,
+// digits, '_', '-', '.', and no leading/trailing '.', '-', '_'.
+func validK8sPoolName(s string) error {
+	if len(s) < 1 || len(s) > K8sPoolNameMaxLength {
+		return fmt.Errorf("length must be between 1 and %d", K8sPoolNameMaxLength)
+	}
+
+	first, last := s[0], s[len(s)-1]
+	if first == '.' || first == '-' || first == '_' {
+		return fmt.Errorf("must not start with '.', '-' or '_'")
+	}
+	if last == '.' || last == '-' || last == '_' {
+		return fmt.Errorf("must not end with '.', '-' or '_'")
+	}
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '_' || c == '-' || c == '.':
+		default:
+			return fmt.Errorf("contains invalid character %q", string(c))
 		}
 	}
-	return poolNames, nil
+	return nil
 }

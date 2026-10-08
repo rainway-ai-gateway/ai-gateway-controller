@@ -2,11 +2,11 @@ package testutil
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ALBEntry is a single recorded request to the mock ALB server.
@@ -16,27 +16,26 @@ type ALBEntry struct {
 	Body   string
 }
 
-// ALBMock is an in-process httptest mock of the ai-gateway-api open-api server.
-// It mirrors the contract used by internal/alb/openApiClient.go:
+// ALBMock is an in-process httptest mock of the ai-gateway-api InnerAPI. It
+// mirrors the contract used by internal/alb/innerApiClient.go (k8s_pools):
 //
-//	GET/POST    /open-api/v1/products/{p}/instance-pools[/{n}]
-//	GET/PATCH/DELETE /open-api/v1/products/{p}/instance-pools/{n}
-//	GET/POST    /open-api/v1/products/{p}/ai-pools[/{n}]
-//	GET/PATCH/DELETE /open-api/v1/products/{p}/ai-pools/{n}
+//	PUT         /inner-api/v1/k8s_pools/{n}/instances
+//	GET/DELETE  /inner-api/v1/k8s_pools/{n}
+//	GET         /inner-api/v1/k8s_pools
 //
 // Response body follows internal/alb/apis.Result: {"ErrNum","ErrMsg","Data"}.
 type ALBMock struct {
 	srv *httptest.Server
 
-	mu     sync.Mutex
-	pools  map[string]map[string]json.RawMessage // product -> poolName -> body
-	access []ALBEntry
+	mu       sync.Mutex
+	k8sPools map[string]json.RawMessage // k8s pool name -> instances array
+	access   []ALBEntry
 }
 
 // NewALBMock starts the mock ALB server and returns it.
 func NewALBMock() *ALBMock {
 	m := &ALBMock{
-		pools: make(map[string]map[string]json.RawMessage),
+		k8sPools: make(map[string]json.RawMessage),
 	}
 	m.srv = httptest.NewServer(http.HandlerFunc(m.handle))
 	return m
@@ -67,45 +66,42 @@ func (m *ALBMock) HasPath(substr string) bool {
 	return false
 }
 
-// ProductPools returns names of instance/ai pools created under product.
-func (m *ALBMock) ProductPools(product string) []string {
+// GetK8sPool returns the raw instance-array body of a k8s pool, or "" if absent.
+func (m *ALBMock) GetK8sPool(name string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]string, 0, len(m.pools[product]))
-	for k := range m.pools[product] {
-		out = append(out, k)
-	}
-	return out
-}
-
-// GetProductPool returns the raw stored body of a pool, or "" if absent.
-func (m *ALBMock) GetProductPool(product, name string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.pools[product] == nil {
-		return ""
-	}
-	raw, ok := m.pools[product][name]
+	raw, ok := m.k8sPools[name]
 	if !ok {
 		return ""
 	}
 	return string(raw)
 }
 
-// ProductPoolExists reports whether the named pool exists under product.
-func (m *ALBMock) ProductPoolExists(product, name string) bool {
-	return m.GetProductPool(product, name) != ""
-}
-
-// CreateProductPoolRaw seeds a pool directly into the mock store without an
-// HTTP round-trip (used to simulate a pre-existing pool before a reconcile).
-func (m *ALBMock) CreateProductPoolRaw(product, name, body string) error {
+// K8sPoolExists reports whether the named k8s pool exists.
+func (m *ALBMock) K8sPoolExists(name string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.pools[product] == nil {
-		m.pools[product] = make(map[string]json.RawMessage)
+	_, ok := m.k8sPools[name]
+	return ok
+}
+
+// K8sPools returns the names of all k8s pools (unordered).
+func (m *ALBMock) K8sPools() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.k8sPools))
+	for k := range m.k8sPools {
+		out = append(out, k)
 	}
-	m.pools[product][name] = json.RawMessage(body)
+	return out
+}
+
+// CreateK8sPoolRaw seeds a k8s pool directly into the mock store without an
+// HTTP round-trip (used to simulate a pre-existing pool before a reconcile).
+func (m *ALBMock) CreateK8sPoolRaw(name, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.k8sPools[name] = json.RawMessage(body)
 	return nil
 }
 
@@ -117,16 +113,80 @@ func (m *ALBMock) handle(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 
 	path := r.URL.Path
-	switch {
-	case strings.Contains(path, "/instance-pools"):
-		product, name := splitProductRest(path, "/instance-pools")
-		m.handleProductPool(w, r, product, name, body)
-	case strings.Contains(path, "/ai-pools"):
-		product, name := splitProductRest(path, "/ai-pools")
-		m.handleProductPool(w, r, product, name, body)
-	default:
-		m.write(w, http.StatusNotFound, "not found", nil)
+	if strings.HasPrefix(path, "/inner-api/v1/k8s_pools") {
+		m.handleK8sPool(w, r, splitK8sPoolRest(path), body)
+		return
 	}
+	m.write(w, http.StatusNotFound, "not found", nil)
+}
+
+// splitK8sPoolRest extracts the part after /inner-api/v1/k8s_pools, e.g.
+// "" / "{name}" / "{name}/instances".
+func splitK8sPoolRest(path string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(path, "/inner-api/v1/k8s_pools"), "/")
+}
+
+func (m *ALBMock) handleK8sPool(w http.ResponseWriter, r *http.Request, name, body string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	switch {
+	case strings.HasSuffix(name, "/instances") && r.Method == http.MethodPut:
+		pool := strings.TrimSuffix(name, "/instances")
+		if pool == "" {
+			m.write(w, http.StatusBadRequest, "missing name", nil)
+			return
+		}
+		m.k8sPools[pool] = json.RawMessage(body)
+		m.write(w, http.StatusOK, "OK", k8sPoolEntry(pool, body))
+	case name == "" && r.Method == http.MethodGet:
+		list := make([]map[string]interface{}, 0, len(m.k8sPools))
+		for k, raw := range m.k8sPools {
+			list = append(list, map[string]interface{}{
+				"name":           k,
+				"instance_count": countK8sInstances(string(raw)),
+				"last_sync_time": time.Now().Unix(),
+			})
+		}
+		data, _ := json.Marshal(map[string]interface{}{"list": list})
+		m.write(w, http.StatusOK, "OK", data)
+	case name != "" && r.Method == http.MethodGet:
+		raw, ok := m.k8sPools[name]
+		if !ok {
+			m.write(w, http.StatusNotFound, "k8s pool not found", nil)
+			return
+		}
+		m.write(w, http.StatusOK, "OK", k8sPoolEntry(name, string(raw)))
+	case name != "" && r.Method == http.MethodDelete:
+		if _, ok := m.k8sPools[name]; !ok {
+			m.write(w, http.StatusNotFound, "k8s pool not found", nil)
+			return
+		}
+		delete(m.k8sPools, name)
+		m.write(w, http.StatusOK, "OK", nil)
+	default:
+		m.write(w, http.StatusMethodNotAllowed, "method not allowed", nil)
+	}
+}
+
+// k8sPoolEntry builds the PoolEntry response payload (k8s-pools.md §3).
+func k8sPoolEntry(name, body string) json.RawMessage {
+	instances := make([]json.RawMessage, 0)
+	_ = json.Unmarshal([]byte(body), &instances)
+	entry := map[string]interface{}{
+		"name":           name,
+		"instances":      instances,
+		"instance_count": len(instances),
+		"last_sync_time": time.Now().Unix(),
+	}
+	b, _ := json.Marshal(entry)
+	return b
+}
+
+func countK8sInstances(body string) int {
+	instances := make([]json.RawMessage, 0)
+	_ = json.Unmarshal([]byte(body), &instances)
+	return len(instances)
 }
 
 func readBody(r *http.Request) string {
@@ -145,75 +205,6 @@ func readBody(r *http.Request) string {
 	return string(buf)
 }
 
-func (m *ALBMock) handleProductPool(w http.ResponseWriter, r *http.Request, product, name, body string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	ensure := func() {
-		if m.pools[product] == nil {
-			m.pools[product] = make(map[string]json.RawMessage)
-		}
-	}
-
-	switch {
-	case name == "" && r.Method == http.MethodGet:
-		ensure()
-		names := make([]string, 0, len(m.pools[product]))
-		for k := range m.pools[product] {
-			names = append(names, k)
-		}
-		data, _ := json.Marshal(names)
-		m.write(w, http.StatusOK, "OK", data)
-	case name == "" && r.Method == http.MethodPost:
-		ensure()
-		n := extractName(body)
-		if n == "" {
-			m.write(w, http.StatusBadRequest, "missing name", nil)
-			return
-		}
-		m.pools[product][n] = json.RawMessage(body)
-		m.write(w, http.StatusOK, "OK", json.RawMessage(body))
-	case name != "" && r.Method == http.MethodGet:
-		ensure()
-		data, ok := m.pools[product][name]
-		if !ok {
-			m.write(w, http.StatusNotFound, "product pool not found", nil)
-			return
-		}
-		m.write(w, http.StatusOK, "OK", data)
-	case name != "" && r.Method == http.MethodPatch:
-		ensure()
-		if _, ok := m.pools[product][name]; !ok {
-			m.write(w, http.StatusNotFound, "product pool not found", nil)
-			return
-		}
-		m.pools[product][name] = json.RawMessage(body)
-		m.write(w, http.StatusOK, "OK", json.RawMessage(body))
-	case name != "" && r.Method == http.MethodDelete:
-		ensure()
-		delete(m.pools[product], name)
-		m.write(w, http.StatusOK, "OK", nil)
-	default:
-		m.write(w, http.StatusMethodNotAllowed, "method not allowed", nil)
-	}
-}
-
-// splitProductRest extracts the product name and pool name (or "" for a list
-// request) from a path like:
-//
-//	/open-api/v1/products/{product}/{marker}[/{name}]
-func splitProductRest(path, marker string) (product, name string) {
-	idx := strings.Index(path, marker)
-	if idx < 0 {
-		return "", ""
-	}
-	prefix := strings.TrimPrefix(path[:idx], "/open-api/v1/products/")
-	prefix = strings.TrimPrefix(prefix, "/")
-	product = prefix
-	name = strings.TrimPrefix(path[idx+len(marker):], "/")
-	return product, name
-}
-
 func (m *ALBMock) write(w http.ResponseWriter, errNum int, errMsg string, data json.RawMessage) {
 	resp := map[string]interface{}{
 		"ErrNum": errNum,
@@ -226,17 +217,3 @@ func (m *ALBMock) write(w http.ResponseWriter, errNum int, errMsg string, data j
 	w.WriteHeader(errNum)
 	_ = json.NewEncoder(w).Encode(resp)
 }
-
-// extractName pulls "name" from a JSON body.
-func extractName(body string) string {
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(body), &m); err != nil {
-		return ""
-	}
-	if v, ok := m["name"].(string); ok {
-		return v
-	}
-	return ""
-}
-
-var _ = fmt.Sprintf

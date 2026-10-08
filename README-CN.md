@@ -3,10 +3,9 @@
 中文 | [English](./README.md)
 
 `ai-gateway-controller` 是一个 Kubernetes 控制器，用于实现如下功能:
-- Inference pool 发现，并自动同步到 BFE
-- 普通AI k8s Service (未依赖inference pool)发现，并自动同步到 BFE
+- 普通 AI k8s Service 发现，并自动同步到 BFE
 
-该控制器持续监控k8s集群中的上述资源资源变化，自动将符合条件的服务注册到 BFE 配置中，实现大模型推理服务流量的无缝接入与管理。
+该控制器持续监控 k8s 集群中的 Service/Endpoints 变化，自动将符合条件的服务经 InnerAPI `k8s_pools` 上报到 ai-gateway-api，实现大模型推理服务流量的无缝接入与管理。
 
 
 ## 快速开始
@@ -48,14 +47,6 @@ kubectl get pods
 - 请根据ai gateway api的token配置，修改ai-gateway-api-token
   - 在ai gateway api上，可通过如下方式获得Token `User Manage / Token`
 
-### Inference Pool发现
-发布
-```
-$ kubectl apply -f ./examples/inferencepool/inference-pool.yaml
-```
-具体内容请参考 [./examples/inferencepool/inference-pool.yaml](./examples/inferencepool/inference-pool.yaml).
-
-
 ### 普通AI k8s Service发现
 发布
 ```
@@ -64,7 +55,7 @@ $ kubectl apply -f ./examples/l7service/whoami_airs.yaml
 具体内容请参考 [./examples/l7service/whoami_airs.yaml](./examples/l7service/whoami_airs.yaml).
 
 注意点：
-- labels中增加 `bfe-product`, 其值应为 `AI_product`
+- labels中增加 `ai-gateway-api-name`, 其值应与控制器的 `--ai-gateway-api-name` 一致（`*` 匹配任意）
 - ports中的port name必须指定
 
 ## 监控与运维
@@ -117,7 +108,6 @@ GO111MODULE=on GOPROXY=https://goproxy.cn,direct go mod download
 
 注意:
 - 请根据您的实际环境，修改上述配置的值。
-- 启动 ai gateway api 后，已自动创建产品线 `AI_product`
 
 ### 部署ai-gateway-controller
 
@@ -136,35 +126,11 @@ $kubectl logs bfe-ai-gateway-controller-7bb75b9b54-sl27s
 ...
 ```
 
-### 部署Inference Pool AI推理服务
-具体内容请参考 [./examples/inferencepool/inference-pool.yaml](./examples/inferencepool/inference-pool.yaml).
-
-注意点：
-- 不需要修改已有的Inference Pool
-
-```
-# 发布Inference pool
-$ kubectl apply -f ./examples/inferencepool/epp-rbac.yaml
-$ kubectl apply -f ./examples/inferencepool/service-accounts.yaml
-$ kubectl apply -f ./examples/inferencepool/vllm-sim.yaml
-$ kubectl apply -f ./examples/inferencepool/epp-deployments.yaml
-$ kubectl apply -f ./examples/inferencepool/epp-services.yaml
-$ kubectl apply -f ./examples/inferencepool/inference-pool.yaml
- 
-# 删除Inference pool
-$ kubectl delete -f ./examples/inferencepool/inference-pool.yaml
-$ kubectl delete -f ./examples/inferencepool/epp-services.yaml
-$ kubectl delete -f ./examples/inferencepool/epp-deployments.yaml
-$ kubectl delete -f ./examples/inferencepool/vllm-sim.yaml
-$ kubectl delete -f ./examples/inferencepool/service-accounts.yaml
-$ kubectl delete -f ./examples/inferencepool/epp-rbac.yaml
-```
-
 ### 部署普通AI推理服务
 具体内容请参考 [./examples/l7service/whoami_airs.yaml](./examples/l7service/whoami_airs.yaml).
 
 注意点：
-- labels中增加 `bfe-product`, 其值应为 `AI_product`
+- labels中增加 `ai-gateway-api-name`, 其值应与控制器的 `--ai-gateway-api-name` 一致（`*` 匹配任意）
 - ports中的port name必须指定
 
 ```

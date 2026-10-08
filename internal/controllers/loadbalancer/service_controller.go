@@ -51,9 +51,9 @@ import (
 )
 
 const (
-	FinalizerName                  = filter.BfenetworksAnnotationPrefix + "delete-protection"
-	BfenetworksAnnotationPrefix    = filter.BfenetworksAnnotationPrefix
-	ProductPoolResultAnnotationKey = BfenetworksAnnotationPrefix + "productpool-result"
+	RainwayAIGatewayAnnotationPrefix = filter.RainwayAIGatewayAnnotationPrefix
+	FinalizerName                    = RainwayAIGatewayAnnotationPrefix + "delete-protection"
+	K8sPoolResultAnnotationKey       = RainwayAIGatewayAnnotationPrefix + "k8spool-result"
 )
 
 func AddServiceController(mgr manager.Manager) error {
@@ -108,10 +108,9 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				util.K8sCLogger.Info("reconciling service succ to add finalizer", "namespace", req.Namespace, "name", req.Name, "isdel", isdel)
 				//will handle it in next msg
 				return ctrl.Result{}, err
-			} else {
-				util.K8sCLogger.Info("reconciling service failed to add finalizer", "namespace", req.Namespace, "name", req.Name, "isdel", isdel)
-				return ctrl.Result{Requeue: true, RequeueAfter: 30 * time.Second}, err
 			}
+			util.K8sCLogger.Info("reconciling service failed to add finalizer", "namespace", req.Namespace, "name", req.Name, "isdel", isdel)
+			return ctrl.Result{Requeue: true, RequeueAfter: 30 * time.Second}, err
 		}
 		op = OPTypeUpdate
 		err = r.ensurePool(ctx, req.Namespace, req.Name, svc)
@@ -145,43 +144,35 @@ func (r *ServiceReconciler) ensurePool(ctx context.Context, namespace string, na
 		return err
 	}
 
-	labels := service.GetObjectMeta().GetLabels()
-
-	if option.Opts.EnableRsPool {
-		product := option.Opts.ProductName
-		if _, ok := labels["bfe-product"]; ok {
-			product = labels["bfe-product"]
-		}
-		err = r.ensureProductPool(ctx, service, ep, product)
-	}
+	err = r.ensureK8sPool(ctx, service, ep)
 
 	return err
 }
 
-func (r *ServiceReconciler) ensureProductPool(ctx context.Context, service *corev1.Service, ep *corev1.Endpoints, product string) error {
-	var poolNames []string
-	var err1 error
+func (r *ServiceReconciler) ensureK8sPool(ctx context.Context, service *corev1.Service, ep *corev1.Endpoints) error {
+	// Report each named port's instance snapshot to its k8s pool (idempotent,
+	// including empty snapshots). poolNames are the pools successfully reported.
+	poolNames, err1 := r.ExternalLB.EnsureK8sPool(ctx, service, ep, option.Opts.ClusterName)
 
-	poolNames, err1 = r.ExternalLB.EnsureProductPool(ctx, product, service, ep, option.Opts.ClusterName)
-	newpools := genProductPoolNameList(product, poolNames)
-
-	annotation := service.Annotations[ProductPoolResultAnnotationKey]
-
+	// Diff against the previously reported pool names and delete the ones no
+	// longer produced (port renamed/removed), keeping pools whose deletion
+	// failed so they are retried on the next reconcile.
+	annotation := service.Annotations[K8sPoolResultAnnotationKey]
 	if annotation != "" {
-		oldpools, err := extractPoolList(annotation)
+		oldpools, err := extractPoolNames(annotation)
 		if err == nil {
-			diff := diffList(oldpools, newpools)
+			diff := diffPoolNames(oldpools, poolNames)
 			if err1 == nil {
-				delnames, err := r.ExternalLB.DeleteProductPoolByList(ctx, diff)
+				delnames, err := r.ExternalLB.DeleteK8sPoolByList(ctx, diff)
 				if err != nil {
-					util.HdlLogger.Error(err, "del diff product pools")
+					util.HdlLogger.Error(err, "del diff k8s pools")
 				}
-				diff = diffList(diff, delnames)
+				diff = diffPoolNames(diff, delnames)
 			}
-			newpools = append(newpools, diff...)
+			poolNames = append(poolNames, diff...)
 		}
 	}
-	r.addAnnotationByList(ctx, service, newpools, ProductPoolResultAnnotationKey)
+	r.addAnnotationByPoolNames(ctx, service, poolNames, K8sPoolResultAnnotationKey)
 
 	return err1
 }
@@ -191,15 +182,17 @@ func (r *ServiceReconciler) deletePool(ctx context.Context, service *corev1.Serv
 		return nil
 	}
 
-	if option.Opts.EnableRsPool {
-		annotation := service.Annotations[ProductPoolResultAnnotationKey]
-		if annotation != "" {
-			if poollist, err := extractPoolList(annotation); err == nil {
-				// delete the product pools
-				_, err = r.ExternalLB.DeleteProductPoolByList(ctx, poollist)
-				if err != nil {
-					return err
-				}
+	if service.Annotations == nil {
+		return nil
+	}
+
+	annotation := service.Annotations[K8sPoolResultAnnotationKey]
+	if annotation != "" {
+		if poollist, err := extractPoolNames(annotation); err == nil {
+			// delete the k8s pools
+			_, err = r.ExternalLB.DeleteK8sPoolByList(ctx, poollist)
+			if err != nil {
+				return err
 			}
 		}
 	}
@@ -212,63 +205,6 @@ func (r *ServiceReconciler) addFinalizer(ctx context.Context, service *corev1.Se
 
 	if err := r.Patch(ctx, service, patch); err != nil {
 		util.K8sCLogger.Info("failed to add finalizer", "FinalizerName", FinalizerName)
-		return err
-	}
-
-	return nil
-}
-
-func extractPoolList(annotation string) (openapi.ProductPoolnameList, error) {
-	var poollist openapi.ProductPoolnameList
-
-	err := json.Unmarshal([]byte(annotation), &poollist)
-	if err != nil {
-		util.HdlLogger.Error(err, "unmarshal", "annotation", annotation)
-		return nil, err
-	}
-
-	return poollist, nil
-}
-
-func diffList(oldlist, newlist openapi.ProductPoolnameList) openapi.ProductPoolnameList {
-	diff := make(openapi.ProductPoolnameList, 0, len(oldlist))
-	for _, p := range oldlist {
-		has := false
-		for _, n := range newlist {
-			if n.Product == p.Product && n.Poolname == p.Poolname {
-				has = true
-				break
-			}
-		}
-		if !has {
-			diff = append(diff, p)
-		}
-	}
-	return diff
-}
-
-func genProductPoolNameList(product string, poolNames []string) openapi.ProductPoolnameList {
-	newlist := make(openapi.ProductPoolnameList, 0, len(poolNames))
-	for _, n := range poolNames {
-		newlist = append(newlist, openapi.ProductPoolname{
-			Product:  product,
-			Poolname: n,
-		})
-	}
-	return newlist
-}
-
-func (r *ServiceReconciler) addAnnotationByList(ctx context.Context, service *corev1.Service, pools openapi.ProductPoolnameList, annotationKey string) error {
-	patch := client.MergeFrom(service.DeepCopy())
-	if service.Annotations == nil {
-		service.Annotations = make(map[string]string)
-	}
-
-	jsonstr, _ := json.Marshal(pools)
-	service.Annotations[annotationKey] = string(jsonstr)
-
-	if err := r.Patch(ctx, service, patch); err != nil {
-		util.K8sCLogger.Info("failed to add annotation", "key", annotationKey, "pool", string(jsonstr))
 		return err
 	}
 
@@ -295,6 +231,52 @@ func hasFinalizer(service *corev1.Service, finalizer string) bool {
 		}
 	}
 	return false
+}
+
+func extractPoolNames(annotation string) ([]string, error) {
+	var poollist []string
+
+	err := json.Unmarshal([]byte(annotation), &poollist)
+	if err != nil {
+		util.HdlLogger.Error(err, "unmarshal", "annotation", annotation)
+		return nil, err
+	}
+
+	return poollist, nil
+}
+
+func diffPoolNames(oldlist, newlist []string) []string {
+	diff := make([]string, 0, len(oldlist))
+	for _, p := range oldlist {
+		has := false
+		for _, n := range newlist {
+			if n == p {
+				has = true
+				break
+			}
+		}
+		if !has {
+			diff = append(diff, p)
+		}
+	}
+	return diff
+}
+
+func (r *ServiceReconciler) addAnnotationByPoolNames(ctx context.Context, service *corev1.Service, pools []string, annotationKey string) error {
+	patch := client.MergeFrom(service.DeepCopy())
+	if service.Annotations == nil {
+		service.Annotations = make(map[string]string)
+	}
+
+	jsonstr, _ := json.Marshal(pools)
+	service.Annotations[annotationKey] = string(jsonstr)
+
+	if err := r.Patch(ctx, service, patch); err != nil {
+		util.K8sCLogger.Info("failed to add annotation", "key", annotationKey, "pool", string(jsonstr))
+		return err
+	}
+
+	return nil
 }
 
 func (r *ServiceReconciler) handleResultConfigmap(ctx context.Context, ns string, name string, err error, op string) error {

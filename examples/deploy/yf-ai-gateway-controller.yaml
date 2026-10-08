@@ -58,10 +58,11 @@ spec:
           image: 172.18.1.244:5000/bfenetworks/ai-gateway-controller:latest
           command: [ "/ai-gateway-controller" ]
           args:
-            - '-ai-gateway-api-addr=http://172.18.1.196:8183'
-            - '-ai-gateway-api-token=Token 4M_qRi1xYfjGtFiuHWrr'
+            - '-ai-gateway-api-name=rainway-ai-gatway-demo'
+            - '-ai-gateway-api-addr=http://172.19.1.222:8183/'
+            - '-ai-gateway-api-token=Token _R3PsvpQy8S7yjNotcmG'
             - '-k8s-cluster-name=szyf'
-            - '-namespace=open-bfe-demo'
+            - '-namespace=rainway-ai-gatway'
             - '-zap-log-level=debug'
           ports:
             - containerPort: 9081

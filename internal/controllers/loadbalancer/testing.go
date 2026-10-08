@@ -16,7 +16,6 @@ package loadbalancer
 
 import (
 	openapi "github.com/yf-networks/ai-gateway-controller/internal/alb"
-	"github.com/yf-networks/ai-gateway-controller/internal/datastore"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,16 +30,5 @@ func NewTestReconciler(c client.Client, scheme *runtime.Scheme, lb *openapi.AlbP
 		Client:     c,
 		Scheme:     scheme,
 		recorder:   recorder,
-	}
-}
-
-// NewTestInferencePoolReconciler builds an InferencePoolReconciler for in-process
-// integration tests. It is equivalent to the reconciler built by
-// AddInferencePoolReconciler, but injects a fake client and a fresh InferPoolDict.
-func NewTestInferencePoolReconciler(c client.Reader, dict *datastore.InferPoolDict, lb *openapi.AlbProvider) *InferencePoolReconciler {
-	return &InferencePoolReconciler{
-		Reader:        c,
-		inferPoolDict: dict,
-		ExternalLB:    lb,
 	}
 }

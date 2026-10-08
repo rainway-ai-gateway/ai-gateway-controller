@@ -1,6 +1,6 @@
 # /run-int-tests — ai-gateway-controller 集成测试飞轮
 
-Run the mock-based integration tests (`test/integration/`) and auto-fix failures in a closed loop. No real k8s is used — k8s data (Service/Endpoints/ConfigMap/Pod/InferencePool) is mocked via controller-runtime fake client, and the ai-gateway-api is mocked via httptest.
+Run the mock-based integration tests (`test/integration/`) and auto-fix failures in a closed loop. No real k8s is used — k8s data (Service/Endpoints/ConfigMap) is mocked via controller-runtime fake client, and the ai-gateway-api is mocked via httptest.
 
 ## Usage
 ```
@@ -33,7 +33,7 @@ while tests fail AND iteration < 10:
     log: test/integration/artifacts/flywheel-iter-<N>.log
 
     for each failed test:
-        read tests/<feature>/design.md + design-docs/sys-design/*.md
+        read test/integration/tests/<feature>/design.md + design-docs/sys-design/*.md
         read code file:line
         read assertion: expected vs actual
 
