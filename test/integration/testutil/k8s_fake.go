@@ -5,8 +5,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-
-	inferenceApi "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 )
 
 // PortSpec describes a single Service port (name/port/targetPort) plus the
@@ -31,15 +29,15 @@ type ServiceSpec struct {
 }
 
 // BuildService returns a Service object ready to be seeded into the fake client.
-// The default label bfe-product=AI_product is only injected when the key is NOT
-// present in s.Labels, so tests can override or deliberately omit it.
+// The default label ai-gateway-api-name=<DefaultAPIName> is only injected when
+// the key is NOT present in s.Labels, so tests can override or omit it.
 func BuildService(s ServiceSpec) *corev1.Service {
 	labels := map[string]string{}
 	for k, v := range s.Labels {
 		labels[k] = v
 	}
-	if _, ok := labels["bfe-product"]; !ok {
-		labels["bfe-product"] = "AI_product"
+	if _, ok := labels["ai-gateway-api-name"]; !ok {
+		labels["ai-gateway-api-name"] = DefaultAPIName
 	}
 
 	ports := s.Ports
@@ -108,65 +106,6 @@ func BuildEndpoints(s ServiceSpec) *corev1.Endpoints {
 			{
 				Addresses: addrs,
 				Ports:     epPorts,
-			},
-		},
-	}
-}
-
-// BuildPod returns a Pod with the given labels and PodIP. When ready=true the
-// Pod carries the PodReady=True condition (and no deletion timestamp), which is
-// what the InferencePool discovery relies on to include it as an instance.
-func BuildPod(name, ns string, labels map[string]string, podIP string, ready bool) *corev1.Pod {
-	condStatus := corev1.ConditionFalse
-	if ready {
-		condStatus = corev1.ConditionTrue
-	}
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: ns,
-			Labels:    labels,
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: "app", Image: "test/app"}},
-		},
-		Status: corev1.PodStatus{
-			PodIP: podIP,
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodReady, Status: condStatus},
-			},
-		},
-	}
-}
-
-// BuildInferencePool returns an InferencePool object with the given selector,
-// target ports and endpoint picker reference (a Service with a numbered port).
-func BuildInferencePool(name, ns string, selector map[string]string, targetPorts []int32, eppName string, eppPort int32) *inferenceApi.InferencePool {
-	labels := make(map[inferenceApi.LabelKey]inferenceApi.LabelValue, len(selector))
-	for k, v := range selector {
-		labels[inferenceApi.LabelKey(k)] = inferenceApi.LabelValue(v)
-	}
-	tps := make([]inferenceApi.Port, 0, len(targetPorts))
-	for _, p := range targetPorts {
-		tps = append(tps, inferenceApi.Port{Number: inferenceApi.PortNumber(p)})
-	}
-	port := inferenceApi.Port{Number: inferenceApi.PortNumber(eppPort)}
-	return &inferenceApi.InferencePool{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "inference.networking.k8s.io/v1",
-			Kind:       "InferencePool",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: ns,
-		},
-		Spec: inferenceApi.InferencePoolSpec{
-			Selector:    inferenceApi.LabelSelector{MatchLabels: labels},
-			TargetPorts: tps,
-			EndpointPickerRef: inferenceApi.EndpointPickerRef{
-				Name: inferenceApi.ObjectName(eppName),
-				Kind: inferenceApi.Kind("Service"),
-				Port: &port,
 			},
 		},
 	}

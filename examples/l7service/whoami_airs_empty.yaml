@@ -31,9 +31,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: whoami-airs-empty
-  namespace: open-bfe-demo
+  namespace:  rainway-ai-gatway
   labels:
-    bfe-product: AI_product
+    ai-gateway-api-name: rainway-ai-gatway-demo
 spec:
   # type: ClusterIP
   # clusterIP: None

@@ -57,34 +57,19 @@ func HasFinalizer(svc *corev1.Service, finalizer string) bool {
 	return false
 }
 
-// instance mirrors the JSON body shape of product_pool.Instance for assertions.
-type instance struct {
-	Hostname string         `json:"hostname"`
-	IP       string         `json:"ip"`
-	Weight   int64          `json:"weight"`
-	Ports    map[string]int `json:"ports"`
+// K8sInstance mirrors the JSON shape of a k8s_pool instance.
+type K8sInstance struct {
+	Addr   string `json:"addr"`
+	Port   int    `json:"port"`
+	Weight int64  `json:"weight"`
 }
 
-type eppServer struct {
-	Domain *string `json:"domain"`
-	Port   *int    `json:"port"`
-}
-
-// upsertBody mirrors the JSON shape the controller POSTs for a product pool.
-type upsertBody struct {
-	Type      string     `json:"type"`
-	Role      string     `json:"role"`
-	Name      string     `json:"name"`
-	Instances []instance `json:"instances"`
-	EPPServer eppServer  `json:"epp_server"`
-}
-
-// ParseUpsertBody parses a stored product-pool body.
-func ParseUpsertBody(t *testing.T, body string) upsertBody {
+// ParseK8sPoolInstances parses a stored k8s pool instance-array body.
+func ParseK8sPoolInstances(t *testing.T, body string) []K8sInstance {
 	t.Helper()
-	var up upsertBody
-	if err := json.Unmarshal([]byte(body), &up); err != nil {
-		t.Fatalf("parse upsert body %q: %v", body, err)
+	var instances []K8sInstance
+	if err := json.Unmarshal([]byte(body), &instances); err != nil {
+		t.Fatalf("parse k8s pool body %q: %v", body, err)
 	}
-	return up
+	return instances
 }

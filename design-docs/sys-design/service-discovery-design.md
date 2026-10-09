@@ -6,11 +6,11 @@
 
 ## 1. 目标
 
-监听集群内普通 `Service`（及其同名 `Endpoints`），将携带 `bfe-product` 标签且属于监听命名空间的 Service 自动注册到 ai-gateway-api 的产品实例池中，并保证在 Service 变更/删除时同步更新或清理产品池。
+监听集群内普通 `Service`（及其同名 `Endpoints`），将携带 `ai-gateway-api-name` 标签且属于监听命名空间的 Service 所对应的后端实例，经 InnerAPI 全量上报到 ai-gateway-api 的 K8s 实例池（`k8s_pools`）；引用该池的 Provider 由 api 侧 fan-out 同步。Service 变更/删除时同步更新或清理池。
 
 ## 2. 资源监听与过滤
 
-控制器通过 `SetupWithManager` 注册对两类资源的监听（`service_controller.go:361`）：
+控制器通过 `setupWithManager` 注册对两类资源的监听（`service_controller.go:343`）：
 
 - `For(&corev1.Service{}, ...)`：主资源。
 - `Watches(&corev1.Endpoints{}, ...)`：当 Endpoints 变化时，将同名 Service 入队（`handler.EnqueueRequestForObject`）。
@@ -23,38 +23,37 @@
 
 ### 2.2 标签过滤（LabelFilter）
 
-见 `internal/controllers/filter/label.go` 的 `isYingfeiRSService`：
+见 `internal/controllers/filter/label.go` 的 `isYingfeiRSService`（标签键常量为 `filter.RainwayAIGatewayAPIName = "ai-gateway-api-name"`，`label.go:40`）：
 
-- 要求功能开关 `--enable-rs-pool=true`；
-- Service 必须携带标签 `bfe-product`，且其值必须与 `--bfe-product-name` 一致。
+- Service 必须携带标签 `ai-gateway-api-name`，且其值必须与 `--ai-gateway-api-name` 一致（`--ai-gateway-api-name=*` 表示匹配任意带该标签的 Service）。
 
 不满足条件的 Service 会被 Predicate 直接过滤掉，不触发 Reconcile。
 
 ## 3. 核心数据结构
 
 ```go
-// 产品池标识（用于结果 annotation 与删除比对）
-type ProductPoolname struct {
-    Product  string
-    Poolname string
-}
-type ProductPoolnameList []ProductPoolname
-
 // ServiceReconciler
 type ServiceReconciler struct {
+    // AlbProvider 内含 InnerApiClient（k8s_pools InnerAPI）
     ExternalLB *openapi.AlbProvider
     client.Client
     Scheme   *runtime.Scheme
     recorder record.EventRecorder
 }
+
+// AlbProvider（internal/alb/albProvider.go:45）
+type AlbProvider struct {
+    options     *externalLB.Options
+    innerClient K8sPoolClient // k8s_pools 通道，可注入 fake 便于单测
+}
 ```
 
-关键常量（`service_controller.go:53`）：
+关键常量（`service_controller.go:53`，前缀常量定义于 `filter/label.go:39`）：
 
 ```go
-FinalizerName                  = "k8s.bfenetworks.com/delete-protection"
-BfenetworksAnnotationPrefix    = "k8s.bfenetworks.com/"
-ProductPoolResultAnnotationKey = "k8s.bfenetworks.com/productpool-result"
+RainwayAIGatewayAnnotationPrefix = filter.RainwayAIGatewayAnnotationPrefix // "k8s.bfenetworks.com/"
+FinalizerName                    = RainwayAIGatewayAnnotationPrefix + "delete-protection"
+K8sPoolResultAnnotationKey       = RainwayAIGatewayAnnotationPrefix + "k8spool-result"
 ```
 
 ## 4. Reconcile 主流程
@@ -65,8 +64,8 @@ flowchart TD
     B --> C{needDelete?}
     C -- 否 --> D{已有 finalizer?}
     D -- 否 --> E[addFinalizer 后返回, 等待下次事件]
-    D -- 是 --> F[ensurePool: 读取 Endpoints 并同步产品池]
-    C -- 是 --> G[deletePool: 按 annotation 删除产品池]
+    D -- 是 --> F[ensurePool: 读取 Endpoints 并上报 k8s 池]
+    C -- 是 --> G[deletePool: 按 annotation 删除 k8s 池]
     G --> H[removeFinalizer]
     F --> I[emitEvent]
     H --> I
@@ -84,10 +83,11 @@ flowchart TD
 
 ### 4.2 finalizer 机制
 
-- 首次处理 Service 时先添加 finalizer `k8s.bfenetworks.com/delete-protection`，防止 Service 被直接删除而遗漏产品池清理；
-- 删除时先删除产品池，成功（或 `--force-rm-finalizer=true`）后移除 finalizer。
+- 首次处理 Service 时先添加 finalizer `k8s.bfenetworks.com/delete-protection`，添加成功即返回，等待下次事件；添加失败则 `RequeueAfter 30s` 重试；
+- 删除时先删除 k8s 池，成功（或 `--force-rm-finalizer=true`）后移除 finalizer，Service 才真正被删除；
+- 删除事件到达但对象已消失（`Get` 返回 NotFound，例如 finalizer 曾被手动清理）时，在 `--skip-nil-svc-delete=true`（默认）下直接跳过。
 
-## 5. 产品池创建/更新（ensurePool）
+## 5. K8s 池上报（ensurePool）
 
 ```mermaid
 sequenceDiagram
@@ -97,42 +97,30 @@ sequenceDiagram
     participant G as ai-gateway-api
 
     R->>K: Get Endpoints(ns, name)
-    R->>R: 确定 product(=label bfe-product 或 --bfe-product-name)
-    R->>A: EnsureProductPool(product, service, ep, cluster)
+    R->>A: EnsureK8sPool(service, ep, cluster)
     loop 每个非空 spec.ports[].name
-        A->>A: poolName(product, ns, name, portName, cluster)
-        A->>A: getInstances(ep, portName)
-        alt 实例为空
-            A->>A: 仅记录池名, 跳过调用
-        else
-            A->>G: GetProductPool(product, pool)
-            alt 不存在
-                A->>G: CreateProductPool
-            else 已存在
-                A->>G: UpdateProductPool
-            end
-        end
+        A->>A: k8sPoolName(ns, name, portName, cluster)
+        A->>A: getK8sPoolInstances(ep, portName)
+        A->>G: PUT /inner-api/v1/k8s_pools/{name}/instances (全量快照, 含空数组)
     end
-    R->>R: 比对旧/新池列表, 删除多余池, 写回 annotation
+    R->>R: 比对旧/新池名, DELETE 多余池, 写回 annotation
 ```
 
-`ensurePool`（`service_controller.go:138`）与 `ensureProductPool`（`service_controller.go:161`）要点：
+`ensurePool`（`service_controller.go:137`）与 `ensureK8sPool`（`service_controller.go:152`）要点：
 
 1. 读取同名 `Endpoints`；
-2. 确定 product：优先取 Service 标签 `bfe-product` 的值，否则取 `--bfe-product-name`；
-3. 调用 `EnsureProductPool`（`internal/alb/albProvider.go:95`）逐个端口同步；
-4. 结果与旧 annotation 中的池列表做 diff，删除已不再存在的池，并把最终列表写回 annotation。
+2. 调用 `EnsureK8sPool`（`internal/alb/albProvider.go:95`）逐个端口全量上报实例快照（空实例上报 `[]`，表达零实例），返回成功上报的池名列表；
+3. 结果与旧 annotation 中的池名列表做 diff，删除已不再产生的池，并把最终列表写回 annotation（见 §6）。
 
-### 5.1 实例提取（getInstances）
+### 5.1 实例提取（getK8sPoolInstances）
 
-`albProvider.go:72`：遍历 `Endpoints.subsets[]`，取 `subset.ports[]` 中 `name == service端口名` 的端口，将 `subset.addresses[].ip` 作为实例：
+`getK8sPoolInstances`（`albProvider.go:65`）：遍历 `Endpoints.subsets[]`，对每个 subset 取第一个 `name == service端口名` 的端口，将 `subset.addresses[].ip` 作为实例，并按 `(addr, port)` 去重（命中端口后 `break` 出该 subset 的端口循环，继续处理其余 subset）：
 
 ```go
-Instance{
-    Hostname: addr.IP,
-    IP:       addr.IP,
-    Weight:   1,
-    Ports:    map[string]int{"Default": int(p.Port)},
+k8s_pool.Instance{
+    Addr: addr.IP,
+    Port: int(p.Port),
+    // Weight 省略，由 API 置默认 100
 }
 ```
 
@@ -140,33 +128,35 @@ Instance{
 
 ### 5.2 池命名
 
-`albProvider.go:164`：
+`k8sPoolName`（`albProvider.go:152`）：
 
 ```
-<product>.k8s_<namespace>_<service-name>_<port-name>[_<cluster-name>]
+k8s_<namespace>_<service-name>_<port-name>[_<cluster-name>]
 ```
 
-`<cluster-name>` 为空时不追加该段。
+- `<cluster-name>` 为空时不追加该段；
+- 超过 64 字符时折叠为可读前缀 + 8 位哈希：`pool[:55] + "_" + sha256("<ns>|<svc>|<port>|<cluster>")[:8]`（`shortHash8`，`albProvider.go:170`）；
+- 结果统一经 `validK8sPoolName` 校验：1-64 字符，仅字母/数字/`_`/`-`/`.`，首尾不得为 `.`/`-`/`_`；不合法时返回错误，由 Reconcile 决定是否重试。
 
-## 6. 池列表差异计算与 annotation
+## 6. 池名差异计算与 annotation
 
-`ensureProductPool` 中维护 `k8s.bfenetworks.com/productpool-result` annotation，用于记录该 Service 当前管理的产品池列表（JSON 数组，元素为 `{Product, Poolname}`）：
+`ensureK8sPool` 中维护 `k8s.bfenetworks.com/k8spool-result` annotation，用于记录该 Service 当前管理的 k8s 池名列表（JSON 字符串数组）：
 
-- `genProductPoolNameList`：将本次生成的池名列表包装成 `ProductPoolnameList`；
-- `extractPoolList`：反序列化旧 annotation；
-- `diffList`：计算旧列表中已不在新列表的池（`diffList(old, new)`）；
-- 对 diff 结果调用 `DeleteProductPoolByList` 删除多余池；
-- `addAnnotationByList`：把最终列表写回 annotation。
+- `extractPoolNames`：反序列化旧 annotation 为 `[]string`；
+- `diffPoolNames`：计算旧列表中已不在新列表的池（`diffPoolNames(old, new)`）；
+- 仅当本次 `EnsureK8sPool` 成功（`err1 == nil`）时，才对 diff 结果调用 `DeleteK8sPoolByList` 删除多余池；
+- `DeleteK8sPoolByList` 返回真正删除成功的池名；未删成功的池由 `diffPoolNames(diff, delnames)` 保留下来，`append` 回最终列表，等待下次 reconcile 重试；
+- `addAnnotationByPoolNames`：把最终列表写回 annotation。
 
-这样即使 Service 的端口被删除/改名，也能清理对应的旧产品池。
+这样即使 Service 的端口被删除/改名，也能清理对应的旧 k8s 池；删除失败的池不丢账，重试时继续处理。
 
 ## 7. 删除流程（deletePool）
 
-`service_controller.go:189`：从 annotation `productpool-result` 读出池列表，逐个调用 `DeleteProductPoolByList` 删除产品池；成功后（或 `--force-rm-finalizer`）移除 finalizer。
+`deletePool`（`service_controller.go:180`）：从 annotation `k8spool-result` 读出池名列表，逐个调用 `DeleteK8sPoolByList` 删除 k8s 池（404 视为成功）；删除成功（或 `--force-rm-finalizer`）后移除 finalizer `k8s.bfenetworks.com/delete-protection`。
 
 ## 8. 结果回写（result ConfigMap）
 
-`handleResultConfigmap`（`service_controller.go:300`）将每次处理结果写入同名 `<service-name>.result` 的 ConfigMap：
+`handleResultConfigmap`（`service_controller.go:282`）将每次处理结果写入同名 `<service-name>.result` 的 ConfigMap：
 
 | 字段 | 说明 |
 | --- | --- |
@@ -180,8 +170,8 @@ Instance{
 
 ## 9. 事件与日志
 
-`emitEvent`（`service_controller.go:348`）：成功记录 `Normal` 事件，失败记录 `Warning` 事件，事件 reason 形如 `update success For <ns>::<name>` / `update failed For <ns>::<name>`。
+`emitEvent`（`service_controller.go:330`）：成功记录 `Normal` 事件，失败记录 `Warning` 事件，事件 reason 形如 `update success For <ns>::<name>` / `update failed For <ns>::<name>`。
 
 ## 10. 错误重试
 
-`Reconcile` 末尾：当处理出错且 `--retry-interval-unit-sec > 0`（代码中默认经 `option.SetOptions` 后实际生效值见 `internal/option/options.go:111` 默认 15s）时，返回 `RequeueAfter` 延迟重试。
+`Reconcile` 末尾（`service_controller.go:127`）：当处理出错且 `--retry-interval-unit-sec > 0` 时，返回 `RequeueAfter` 延迟重试。注意该 flag 在 `cmd/ai-gateway-controller/flags.go:59` 的默认值为 `-1`（不重试），会覆盖 `internal/option/options.go:100` 的内置初值 `15`，因此只有显式传入正值才会启用延迟重试。

@@ -11,16 +11,16 @@ import (
 )
 
 const (
-	ns       = "yxy-it-service"
-	svcName  = "it-svc"
-	product  = "AI_product"
-	cluster  = "testk8s"
+	ns        = "yxy-it-service"
+	svcName   = "it-svc"
+	apiName   = testutil.DefaultAPIName
+	cluster   = "testk8s"
 	finalizer = "k8s.bfenetworks.com/delete-protection"
-	annotKey  = "k8s.bfenetworks.com/productpool-result"
+	annotKey  = "k8s.bfenetworks.com/k8spool-result"
 )
 
 func poolName(portName string) string {
-	return product + ".k8s_" + ns + "_" + svcName + "_" + portName + "_" + cluster
+	return "k8s_" + ns + "_" + svcName + "_" + portName + "_" + cluster
 }
 
 func serviceSpec(specs ...testutil.PortSpec) testutil.ServiceSpec {
@@ -28,7 +28,7 @@ func serviceSpec(specs ...testutil.PortSpec) testutil.ServiceSpec {
 		Name:      svcName,
 		Namespace: ns,
 		UID:       types.UID("aabbccdd-0000-4000-8000-000000000030"),
-		Labels:    map[string]string{"bfe-product": product},
+		Labels:    map[string]string{"ai-gateway-api-name": apiName},
 		Ports:     specs,
 		PodIPs:    []string{"10.244.0.99"},
 	}
@@ -40,34 +40,30 @@ func setEnv(t *testing.T, spec testutil.ServiceSpec) *testutil.Env {
 		testutil.BuildService(spec), testutil.BuildEndpoints(spec))
 	env.Namespace = ns
 	env.SvcName = svcName
-	env.Product = product
 	env.Cluster = cluster
 	return env
 }
 
-// TC-01: 命名规则 + 实例组装（hostname=ip, weight=1, ports.Default=endpointPort）
+// TC-01: 命名规则 + 实例组装（addr=pod ip, port=endpoint port）
 func TestService_NamingAndInstances(t *testing.T) {
 	spec := serviceSpec(testutil.PortSpec{Name: "http", Port: 8080, TargetPort: 80})
 	env := setEnv(t, spec)
 
 	want := poolName("http")
-	if err := env.ReconcileUntil(t, func() bool { return env.MockALB.ProductPoolExists(product, want) }, 5*time.Second); err != nil {
+	if err := env.ReconcileUntil(t, func() bool { return env.MockALB.K8sPoolExists(want) }, 5*time.Second); err != nil {
 		t.Fatalf("reconcile until pool present: %v", err)
 	}
 
-	up := testutil.ParseUpsertBody(t, env.MockALB.GetProductPool(product, want))
-	if len(up.Instances) != 1 {
-		t.Fatalf("expected 1 instance, got %d (%s)", len(up.Instances), env.MockALB.GetProductPool(product, want))
+	instances := testutil.ParseK8sPoolInstances(t, env.MockALB.GetK8sPool(want))
+	if len(instances) != 1 {
+		t.Fatalf("expected 1 instance, got %d (%s)", len(instances), env.MockALB.GetK8sPool(want))
 	}
-	ins := up.Instances[0]
-	if ins.Hostname != "10.244.0.99" || ins.IP != "10.244.0.99" {
-		t.Fatalf("hostname/ip should be pod ip, got %+v", ins)
+	ins := instances[0]
+	if ins.Addr != "10.244.0.99" {
+		t.Fatalf("addr should be pod ip, got %+v", ins)
 	}
-	if ins.Weight != 1 {
-		t.Fatalf("weight should be 1, got %d", ins.Weight)
-	}
-	if ins.Ports["Default"] != 80 {
-		t.Fatalf("ports.Default should be 80 (endpoint port), got %v", ins.Ports)
+	if ins.Port != 80 {
+		t.Fatalf("port should be 80 (endpoint port), got %d", ins.Port)
 	}
 }
 
@@ -81,11 +77,11 @@ func TestService_MultiPort(t *testing.T) {
 
 	p1, p2 := poolName("http"), poolName("grpc")
 	if err := env.ReconcileUntil(t, func() bool {
-		return env.MockALB.ProductPoolExists(product, p1) && env.MockALB.ProductPoolExists(product, p2)
+		return env.MockALB.K8sPoolExists(p1) && env.MockALB.K8sPoolExists(p2)
 	}, 5*time.Second); err != nil {
 		t.Fatalf("reconcile until both pools present: %v", err)
 	}
-	if got := env.MockALB.ProductPools(product); len(got) != 2 {
+	if got := env.MockALB.K8sPools(); len(got) != 2 {
 		t.Fatalf("expected 2 pools, got %v", got)
 	}
 }
@@ -99,16 +95,16 @@ func TestService_UnnamedPortSkipped(t *testing.T) {
 	env := setEnv(t, spec)
 
 	if err := env.ReconcileUntil(t, func() bool {
-		return env.MockALB.ProductPoolExists(product, poolName("named"))
+		return env.MockALB.K8sPoolExists(poolName("named"))
 	}, 5*time.Second); err != nil {
 		t.Fatalf("reconcile until named pool present: %v", err)
 	}
-	if got := env.MockALB.ProductPools(product); len(got) != 1 {
+	if got := env.MockALB.K8sPools(); len(got) != 1 {
 		t.Fatalf("unnamed port should be skipped, expected 1 pool, got %v", got)
 	}
 }
 
-// TC-04: Endpoints 无实例 -> 不调用 ALB，但 annotation 记录池名
+// TC-04: Endpoints 无实例 -> 上报空池（零实例），annotation 记录池名
 func TestService_EmptyEndpoints(t *testing.T) {
 	spec := serviceSpec(testutil.PortSpec{Name: "http", Port: 8080, TargetPort: 80})
 	spec.PodIPs = nil
@@ -118,20 +114,24 @@ func TestService_EmptyEndpoints(t *testing.T) {
 	env := testutil.NewEnv(t, testutil.DefaultOpts(), testutil.BuildService(spec), epObj)
 	env.Namespace = ns
 	env.SvcName = svcName
-	env.Product = product
 
 	want := poolName("http")
+	if err := env.ReconcileUntil(t, func() bool {
+		return env.MockALB.K8sPoolExists(want)
+	}, 5*time.Second); err != nil {
+		t.Fatalf("reconcile until empty pool present: %v", err)
+	}
+	if got := testutil.ParseK8sPoolInstances(t, env.MockALB.GetK8sPool(want)); len(got) != 0 {
+		t.Fatalf("empty endpoints should report zero instances, got %v", got)
+	}
+
 	if err := env.ReconcileUntil(t, func() bool {
 		s := env.GetService(t)
 		return s.Annotations != nil && s.Annotations[annotKey] != ""
 	}, 5*time.Second); err != nil {
 		t.Fatalf("reconcile until annotation present: %v", err)
 	}
-	if env.MockALB.ProductPoolExists(product, want) {
-		t.Fatalf("empty endpoints should NOT create a pool in ALB")
-	}
-	svc := env.GetService(t)
-	testutil.AssertAnnotationContains(t, svc, annotKey, want)
+	testutil.AssertAnnotationContains(t, env.GetService(t), annotKey, want)
 }
 
 // TC-05: 多 Pod -> 多实例
@@ -141,16 +141,16 @@ func TestService_MultiPodInstances(t *testing.T) {
 	env := setEnv(t, spec)
 
 	want := poolName("http")
-	if err := env.ReconcileUntil(t, func() bool { return env.MockALB.ProductPoolExists(product, want) }, 5*time.Second); err != nil {
+	if err := env.ReconcileUntil(t, func() bool { return env.MockALB.K8sPoolExists(want) }, 5*time.Second); err != nil {
 		t.Fatalf("reconcile until pool present: %v", err)
 	}
-	up := testutil.ParseUpsertBody(t, env.MockALB.GetProductPool(product, want))
-	if len(up.Instances) != 2 {
-		t.Fatalf("expected 2 instances, got %d", len(up.Instances))
+	instances := testutil.ParseK8sPoolInstances(t, env.MockALB.GetK8sPool(want))
+	if len(instances) != 2 {
+		t.Fatalf("expected 2 instances, got %d", len(instances))
 	}
 }
 
-// TC-06: productpool-result 注解写回
+// TC-06: k8spool-result 注解写回
 func TestService_WritesResultAnnotation(t *testing.T) {
 	spec := serviceSpec(testutil.PortSpec{Name: "http", Port: 8080, TargetPort: 80})
 	env := setEnv(t, spec)
@@ -174,7 +174,7 @@ func TestService_DiffConvergeRemovesPool(t *testing.T) {
 
 	p1, p2 := poolName("http"), poolName("grpc")
 	if err := env.ReconcileUntil(t, func() bool {
-		return env.MockALB.ProductPoolExists(product, p1) && env.MockALB.ProductPoolExists(product, p2)
+		return env.MockALB.K8sPoolExists(p1) && env.MockALB.K8sPoolExists(p2)
 	}, 5*time.Second); err != nil {
 		t.Fatalf("reconcile until both pools present: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestService_DiffConvergeRemovesPool(t *testing.T) {
 	svcObj := env.GetService(t)
 	newSvc := testutil.BuildService(testutil.ServiceSpec{
 		Name: svcName, Namespace: ns, UID: svcObj.UID, Labels: svcObj.Labels,
-		Ports: []testutil.PortSpec{{Name: "http", Port: 8080, TargetPort: 80}},
+		Ports:  []testutil.PortSpec{{Name: "http", Port: 8080, TargetPort: 80}},
 		PodIPs: []string{"10.244.0.99"},
 	})
 	newSvc.Annotations = svcObj.Annotations
@@ -194,9 +194,9 @@ func TestService_DiffConvergeRemovesPool(t *testing.T) {
 	}
 
 	if err := env.ReconcileUntil(t, func() bool {
-		return env.MockALB.ProductPoolExists(product, p1) && !env.MockALB.ProductPoolExists(product, p2)
+		return env.MockALB.K8sPoolExists(p1) && !env.MockALB.K8sPoolExists(p2)
 	}, 8*time.Second); err != nil {
-		t.Fatalf("diff converge: grpc pool should be removed, got pools=%v", env.MockALB.ProductPools(product))
+		t.Fatalf("diff converge: grpc pool should be removed, got pools=%v", env.MockALB.K8sPools())
 	}
 }
 
@@ -212,27 +212,27 @@ func TestService_AddsFinalizer(t *testing.T) {
 	}
 }
 
-// TC-09: 删除路径 —— 删除 Service 后池与 result cm 被清理
+// TC-09: 删除路径 —— 删除 Service 后 finalizer 被移除，k8s 池与 result cm 被清理
 func TestService_DeletePath(t *testing.T) {
 	spec := serviceSpec(testutil.PortSpec{Name: "http", Port: 8080, TargetPort: 80})
 	env := setEnv(t, spec)
 
 	want := poolName("http")
-	if err := env.ReconcileUntil(t, func() bool { return env.MockALB.ProductPoolExists(product, want) }, 5*time.Second); err != nil {
-		t.Fatalf("reconcile until pool present: %v", err)
+	if err := env.ReconcileUntil(t, func() bool {
+		s := env.GetService(t)
+		return env.MockALB.K8sPoolExists(want) && s.Annotations != nil && s.Annotations[annotKey] != ""
+	}, 5*time.Second); err != nil {
+		t.Fatalf("reconcile until pool+annotation present: %v", err)
 	}
 
+	// The controller's finalizer keeps the object around on delete so the
+	// reconciler can read the result annotation and clean up the pools.
 	env.DeleteService(t)
 
-	if err := env.ReconcileOnce(t); err != nil {
-		t.Fatalf("delete reconcile: %v", err)
-	}
-
-	if env.MockALB.ProductPoolExists(product, want) {
-		t.Fatalf("pool should be deleted after service delete")
-	}
-	if env.ServiceExists() {
-		t.Fatalf("service should be removed after finalizer removal")
+	if err := env.ReconcileUntil(t, func() bool {
+		return !env.MockALB.K8sPoolExists(want) && !env.ServiceExists()
+	}, 8*time.Second); err != nil {
+		t.Fatalf("pool should be deleted and service removed after delete, pools=%v", env.MockALB.K8sPools())
 	}
 	if env.ConfigMapExists(svcName + ".result") {
 		t.Fatalf("result configmap should be cleaned up")
@@ -264,7 +264,6 @@ func TestService_ResultCMFailPath(t *testing.T) {
 		testutil.BuildService(spec), testutil.BuildEndpoints(spec))
 	env.Namespace = ns
 	env.SvcName = svcName
-	env.Product = product
 
 	if err := env.ReconcileUntil(t, func() bool { return env.ConfigMapExists(svcName + ".result") }, 5*time.Second); err != nil {
 		t.Fatalf("reconcile until result cm present: %v", err)

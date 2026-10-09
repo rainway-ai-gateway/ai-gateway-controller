@@ -40,7 +40,6 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	inferenceApi "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 
 	"github.com/yf-networks/ai-gateway-controller/internal/controllers"
 	"github.com/yf-networks/ai-gateway-controller/internal/option"
@@ -53,7 +52,6 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(inferenceApi.Install(scheme))
 	initFlags()
 }
 

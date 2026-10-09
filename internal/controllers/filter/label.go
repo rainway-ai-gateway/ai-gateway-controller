@@ -36,34 +36,30 @@ import (
 )
 
 const (
-	BfenetworksAnnotationPrefix = "k8s.bfenetworks.com/"
+	RainwayAIGatewayAnnotationPrefix = "k8s.bfenetworks.com/"
+	RainwayAIGatewayAPIName          = "ai-gateway-api-name"
 )
 
 func isYingfeiRSService(service client.Object) bool {
 	sname := service.GetName()
 	labels := service.GetLabels()
 	if labels != nil {
-		lprodName, ipok := labels["bfe-product"]
-		if ipok {
-			if option.Opts.ProductName != lprodName {
-				util.HdlLogger.V(1).Info("bfe-product label does not match Opts.ProductName skip", "sname", sname)
-				return false
-			} else {
+		apiName, ok := labels[RainwayAIGatewayAPIName]
+		if ok {
+			if option.Opts.ApiName == apiName || option.Opts.ApiName == "*" {
 				return true
 			}
+			util.HdlLogger.V(1).Info("ai-gateway-api-name label does not match Opts.ApiName skip", "sname", sname)
 		}
-		util.HdlLogger.V(1).Info("bfe-product label does not present. skip", "sname", sname)
+		util.HdlLogger.V(1).Info("ai-gateway-api-name label does not present. skip", "sname", sname)
 		return false
 	}
 	return false
 }
 
 func isYingfeiTargetService(service client.Object) bool {
-
-	if option.Opts.EnableRsPool {
-		if isYingfeiRSService(service) {
-			return true
-		}
+	if isYingfeiRSService(service) {
+		return true
 	}
 
 	return false
@@ -71,35 +67,11 @@ func isYingfeiTargetService(service client.Object) bool {
 
 func LabelFilter() predicate.Funcs {
 	funcs := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		// labels := obj.GetLabels()
-		// fmt.Printf("EppXLabelFilter: %s\n, labels:%+v", obj, labels)
-		// if labels == nil {
-		// 	return false
-		// }
-
 		bret := isYingfeiTargetService(obj)
 		if bret {
 			util.K8sCLogger.Info("LabelFilter", "kind", obj.GetObjectKind().GroupVersionKind(), "ns", obj.GetNamespace(), "name", obj.GetName(), "bret", bret)
 		} else {
 			util.K8sCLogger.V(1).Info("LabelFilter", "kind", obj.GetObjectKind().GroupVersionKind(), "ns", obj.GetNamespace(), "name", obj.GetName(), "bret", bret)
-		}
-		return bret
-	})
-
-	return funcs
-}
-
-func isYingfeiEppXTargetObj(obj client.Object) bool {
-	return true
-}
-
-func EppXLabelFilter() predicate.Funcs {
-	funcs := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		bret := isYingfeiEppXTargetObj(obj)
-		if bret {
-			util.K8sCLogger.Info("EppXLabelFilter", "kind", obj.GetObjectKind().GroupVersionKind(), "ns", obj.GetNamespace(), "name", obj.GetName(), "bret", bret)
-		} else {
-			util.K8sCLogger.V(1).Info("EppXLabelFilter", "kind", obj.GetObjectKind().GroupVersionKind(), "ns", obj.GetNamespace(), "name", obj.GetName(), "bret", bret)
 		}
 		return bret
 	})

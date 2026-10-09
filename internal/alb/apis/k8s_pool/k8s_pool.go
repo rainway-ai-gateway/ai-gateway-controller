@@ -26,26 +26,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package product_pool
+// Package k8s_pool mirrors the InnerAPI k8s_pools payloads (k8s-pools.md):
+// the discovery component's full-replacement instance snapshot request and the
+// pool entry/status responses.
+package k8s_pool
 
-type UpsertParam struct {
-	Type      *string     `json:"type"`
-	Name      *string     `json:"name" uri:"instance_pool_name" validate:"required,min=2"`
-	Instances []*Instance `json:"instances" uri:"instances" validate:"min=1,dive"`
-
-	//Domains   []*icluster_conf.Domain  `json:"domains"`
-	//EPPServer *icluster_conf.EPPServer `json:"epp_server"`
-	EPPServer *EPPServer `json:"epp_server"`
-	Role      *string    `json:"role"`
+// Instance is one element of the PUT /k8s_pools/{name}/instances body.
+// Weight is omitted when zero so the API applies its default (100).
+type Instance struct {
+	Addr   string `json:"addr"`
+	Port   int    `json:"port"`
+	Weight int64  `json:"weight,omitempty"`
 }
 
-type EPPServer struct {
-	Domain    *string        `json:"domain"`
-	Port      *int           `json:"port"`
-	Endpoints []*EPPEndpoint `json:"endpoints"`
+// PoolEntry is the response payload of one pool (k8s-pools.md §3).
+type PoolEntry struct {
+	Name          string      `json:"name"`
+	Instances     []*Instance `json:"instances"`
+	InstanceCount int         `json:"instance_count"`
+	LastSyncTime  int64       `json:"last_sync_time"`
 }
 
-type EPPEndpoint struct {
-	IP   *string `json:"ip"`
-	Port *int    `json:"port"`
+// PoolListEntry is the summary payload of one pool in the list response
+// (k8s-pools.md §4).
+type PoolListEntry struct {
+	Name          string `json:"name"`
+	InstanceCount int    `json:"instance_count"`
+	LastSyncTime  int64  `json:"last_sync_time"`
 }

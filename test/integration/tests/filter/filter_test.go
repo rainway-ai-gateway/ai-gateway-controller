@@ -23,7 +23,7 @@ func newRawSvc(labels map[string]string) *corev1.Service {
 	return svc
 }
 
-func labelOK(t *testing.T, svc *corev1.Service) bool {
+func apiNameOK(t *testing.T, svc *corev1.Service) bool {
 	t.Helper()
 	return filter.LabelFilter().Create(event.CreateEvent{Object: svc})
 }
@@ -33,30 +33,30 @@ func withOpts(t *testing.T) {
 	testutil.SetOpts(t, testutil.DefaultOpts())
 }
 
-// TC-01: bfe-product 匹配 -> true
-func TestFilter_ProductMatch(t *testing.T) {
+// TC-01: ai-gateway-api-name 匹配 -> true
+func TestFilter_ApiNameMatch(t *testing.T) {
 	withOpts(t)
-	svc := newRawSvc(map[string]string{"bfe-product": "AI_product"})
-	if !labelOK(t, svc) {
-		t.Fatalf("bfe-product matching should pass filter")
+	svc := newRawSvc(map[string]string{"ai-gateway-api-name": testutil.DefaultAPIName})
+	if !apiNameOK(t, svc) {
+		t.Fatalf("matching ai-gateway-api-name should pass filter")
 	}
 }
 
-// TC-02: bfe-product 缺失 -> false
-func TestFilter_NoProduct(t *testing.T) {
+// TC-02: ai-gateway-api-name 缺失 -> false
+func TestFilter_NoApiName(t *testing.T) {
 	withOpts(t)
 	svc := newRawSvc(map[string]string{"app": "x"})
-	if labelOK(t, svc) {
-		t.Fatalf("service without bfe-product should be filtered out")
+	if apiNameOK(t, svc) {
+		t.Fatalf("service without ai-gateway-api-name should be filtered out")
 	}
 }
 
-// TC-03: bfe-product 值不匹配 -> false
-func TestFilter_ProductMismatch(t *testing.T) {
+// TC-03: ai-gateway-api-name 值不匹配 -> false
+func TestFilter_ApiNameMismatch(t *testing.T) {
 	withOpts(t)
-	svc := newRawSvc(map[string]string{"bfe-product": "other-product"})
-	if labelOK(t, svc) {
-		t.Fatalf("bfe-product mismatch should be filtered out")
+	svc := newRawSvc(map[string]string{"ai-gateway-api-name": "other"})
+	if apiNameOK(t, svc) {
+		t.Fatalf("mismatched ai-gateway-api-name should be filtered out")
 	}
 }
 
@@ -64,20 +64,20 @@ func TestFilter_ProductMismatch(t *testing.T) {
 func TestFilter_NoLabels(t *testing.T) {
 	withOpts(t)
 	svc := newRawSvc(nil)
-	if labelOK(t, svc) {
+	if apiNameOK(t, svc) {
 		t.Fatalf("service without labels should be filtered out")
 	}
 }
 
-// TC-05: enable-rs-pool=false 时即使标签匹配也 -> false
-func TestFilter_RsPoolDisabled(t *testing.T) {
+// TC-05: api-name 配置为 "*" 时任意带标签 Service -> true
+func TestFilter_ApiNameWildcard(t *testing.T) {
 	opts := testutil.DefaultOpts()
-	opts.EnableRsPool = false
+	opts.ApiName = "*"
 	testutil.SetOpts(t, opts)
 
-	svc := newRawSvc(map[string]string{"bfe-product": "AI_product"})
-	if labelOK(t, svc) {
-		t.Fatalf("enable-rs-pool=false should disable service matching")
+	svc := newRawSvc(map[string]string{"ai-gateway-api-name": "anything"})
+	if !apiNameOK(t, svc) {
+		t.Fatalf("api-name '*' should match any labeled service")
 	}
 }
 
